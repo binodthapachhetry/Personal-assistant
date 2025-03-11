@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import type { ReactNode } from 'react'
-import { Platform, Alert } from 'react-native'
+import { Platform, Alert, AppState } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import DocumentPicker from 'react-native-document-picker'
 import type { DocumentPickerResponse } from 'react-native-document-picker'
@@ -59,6 +59,9 @@ number ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [0-9] [1
 # Optional space: by convention, applied in this grammar after literal chars when allowed
 ws ::= | " " | "\\n" [ \\t]{0,20}`
 
+// Default model URL - small Llama 3.2 model that works well on mobile
+const DEFAULT_MODEL_URL = 'https://huggingface.co/hugging-quants/Llama-3.2-1B-Instruct-Q8_0-GGUF/resolve/main/llama-3.2-1b-instruct-q8_0.gguf'
+
 const randId = () => Math.random().toString(36).substr(2, 9)
 
 const user = { id: 'y9d7f8pgn' }
@@ -84,11 +87,13 @@ const renderBubble = ({
 
 export default function App() {
   const [context, setContext] = useState<LlamaContext | undefined>(undefined)
-
   const [inferencing, setInferencing] = useState<boolean>(false)
   const [messages, setMessages] = useState<MessageType.Any[]>([])
+  const [downloading, setDownloading] = useState<boolean>(false)
+  const [downloadProgress, setDownloadProgress] = useState<number>(0)
 
   const conversationIdRef = useRef<string>(defaultConversationId)
+  const lastModelPathRef = useRef<string | null>(null)
 
   const addMessage = (message: MessageType.Any, batching = false) => {
     if (batching) {
@@ -126,12 +131,127 @@ export default function App() {
       })
   }
 
+  const downloadModel = async (url: string) => {
+    const modelDir = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/models`
+    const modelName = url.split('/').pop() || 'model.gguf'
+    const modelPath = `${modelDir}/${modelName}`
+    
+    // Check if already downloaded
+    if (await ReactNativeBlobUtil.fs.exists(modelPath)) {
+      addSystemMessage('Model already downloaded, loading...')
+      return { uri: modelPath }
+    }
+    
+    // Create directory if needed
+    if (!(await ReactNativeBlobUtil.fs.exists(modelDir))) {
+      await ReactNativeBlobUtil.fs.mkdir(modelDir)
+    }
+    
+    setDownloading(true)
+    setDownloadProgress(0)
+    
+    // Add a message to show download progress
+    const msgId = addSystemMessage('Downloading model... 0%', { downloading: true })
+    
+    try {
+      // Download the file
+      await ReactNativeBlobUtil.config({
+        fileCache: true,
+        path: modelPath,
+      })
+        .fetch('GET', url)
+        .progress((received, total) => {
+          const progress = Math.floor((received / total) * 100)
+          setDownloadProgress(progress)
+          
+          // Update the message with progress
+          setMessages((msgs) => {
+            const index = msgs.findIndex((msg) => msg.id === msgId)
+            if (index >= 0) {
+              return msgs.map((msg, i) => {
+                if (msg.type === 'text' && i === index) {
+                  return {
+                    ...msg,
+                    text: `Downloading model... ${progress}%`,
+                  }
+                }
+                return msg
+              })
+            }
+            return msgs
+          })
+        })
+      
+      setDownloading(false)
+      addSystemMessage('Download complete!')
+      return { uri: modelPath }
+    } catch (error) {
+      setDownloading(false)
+      addSystemMessage(`Download failed: ${error.message}`)
+      throw error
+    }
+  }
+
+  const handleDownloadDefaultModel = async () => {
+    try {
+      const modelFile = await downloadModel(DEFAULT_MODEL_URL)
+      lastModelPathRef.current = modelFile.uri
+      handleInitContext(modelFile, null)
+    } catch (error) {
+      console.error('Failed to download model:', error)
+    }
+  }
+
   // Example: Get model info without initializing context
   const getModelInfo = async (model: string) => {
     const t0 = Date.now()
     const info = await loadLlamaModelInfo(model)
     console.log(`Model info (took ${Date.now() - t0}ms): `, info)
   }
+  
+  // Handle app state changes
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState === 'background' && context) {
+        // App is going to background, release context to save memory
+        addSystemMessage('App going to background, releasing model to save memory...')
+        handleReleaseContext()
+      } else if (nextAppState === 'active' && !context && lastModelPathRef.current) {
+        // App is coming to foreground, ask to reload the model
+        Alert.alert(
+          'Reload Model',
+          'Would you like to reload the model?',
+          [
+            { 
+              text: 'Yes', 
+              onPress: () => {
+                const modelFile = { uri: lastModelPathRef.current as string }
+                handleInitContext(modelFile, null)
+              } 
+            },
+            { text: 'No', style: 'cancel' }
+          ]
+        )
+      }
+    })
+    
+    return () => {
+      subscription.remove()
+    }
+  }, [context])
+  
+  // Show welcome message on first load
+  useEffect(() => {
+    if (messages.length === 0) {
+      addSystemMessage(
+        'Welcome to the LLM Chat App!\n\n' +
+        'To get started, you can:\n' +
+        '1. Download our recommended model (1.1GB)\n' +
+        '2. Pick a model from your device\n\n' +
+        'Use the button below to download the recommended model, or tap the attachment icon to select a model from your device.'
+      )
+    }
+  }, [])
 
   const handleInitContext = async (
     file: DocumentPickerResponse,
@@ -712,12 +832,40 @@ export default function App() {
         messages={messages}
         onSendPress={handleSendPress}
         user={user}
-        onAttachmentPress={!context ? handlePickModel : undefined}
+        onAttachmentPress={!context ? 
+          () => {
+            if (downloading) {
+              Alert.alert('Download in Progress', 'Please wait for the current download to complete.')
+              return
+            }
+            
+            Alert.alert(
+              'Choose Model Source',
+              'Where would you like to get the model from?',
+              [
+                {
+                  text: 'Download Recommended Model',
+                  onPress: handleDownloadDefaultModel
+                },
+                {
+                  text: 'Pick from Device',
+                  onPress: handlePickModel
+                },
+                {
+                  text: 'Cancel',
+                  style: 'cancel'
+                }
+              ]
+            )
+          } : undefined
+        }
         textInputProps={{
-          editable: !!context,
-          placeholder: !context
-            ? 'Press the file icon to pick a model'
-            : 'Type your message here',
+          editable: !!context && !downloading,
+          placeholder: downloading 
+            ? `Downloading model... ${downloadProgress}%` 
+            : !context
+              ? 'Press the file icon to get a model'
+              : 'Type your message here',
         }}
       />
     </SafeAreaProvider>
