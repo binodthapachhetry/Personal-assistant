@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { Platform } from 'react-native'
+import { Platform, Alert } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import DocumentPicker from 'react-native-document-picker'
 import type { DocumentPickerResponse } from 'react-native-document-picker'
@@ -232,7 +232,89 @@ export default function App() {
     return loraFile
   }
 
+  const handlePickModelFromDirectory = async () => {
+    const modelsDir = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/models`
+    const exists = await ReactNativeBlobUtil.fs.exists(modelsDir)
+    
+    if (!exists) {
+      addSystemMessage("Models directory doesn't exist. Creating it now.")
+      await ReactNativeBlobUtil.fs.mkdir(modelsDir)
+      addSystemMessage(`Please add model files to: ${modelsDir}`)
+      return
+    }
+    
+    const files = await ReactNativeBlobUtil.fs.ls(modelsDir)
+    if (files.length === 0) {
+      addSystemMessage(`No model files found in: ${modelsDir}`)
+      return
+    }
+    
+    // If there's only one file, use it directly
+    if (files.length === 1) {
+      const modelFile = { uri: `${modelsDir}/${files[0]}` }
+      handleInitContext(modelFile, null)
+      return
+    }
+    
+    // Otherwise, show a picker for multiple files
+    Alert.alert(
+      'Select a Model',
+      'Choose a model file to load:',
+      files.map(file => ({
+        text: file,
+        onPress: async () => {
+          const modelFile = { uri: `${modelsDir}/${file}` }
+          handleInitContext(modelFile, null)
+        }
+      })),
+      { cancelable: true }
+    )
+  }
+
   const handlePickModel = async () => {
+    // First try to pick from the models directory
+    const modelsDir = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/models`
+    const exists = await ReactNativeBlobUtil.fs.exists(modelsDir)
+    
+    if (exists) {
+      // Check if there are models in the directory
+      const files = await ReactNativeBlobUtil.fs.ls(modelsDir)
+      if (files.length > 0) {
+        // If models exist, ask user whether to use directory or document picker
+        Alert.alert(
+          'Choose Model Source',
+          'Where would you like to get the model from?',
+          [
+            {
+              text: 'Models Directory',
+              onPress: handlePickModelFromDirectory
+            },
+            {
+              text: 'Document Picker',
+              onPress: async () => {
+                // Original document picker flow
+                const modelRes = await DocumentPicker.pick({
+                  type: Platform.OS === 'ios' ? 'public.data' : 'application/octet-stream',
+                }).catch((e) => console.log('No model file picked, error: ', e.message))
+                if (!modelRes?.[0]) return
+                const modelFile = await copyFileIfNeeded('model', modelRes?.[0])
+            
+                let loraFile: any = null
+                // Example: Apply lora adapter (Currently only select one lora file) (Uncomment to use)
+                // loraFile = await pickLora()
+                loraFile = null
+            
+                handleInitContext(modelFile, loraFile)
+              }
+            }
+          ],
+          { cancelable: true }
+        )
+        return
+      }
+    }
+    
+    // If no models directory or it's empty, fall back to document picker
     const modelRes = await DocumentPicker.pick({
       type: Platform.OS === 'ios' ? 'public.data' : 'application/octet-stream',
     }).catch((e) => console.log('No model file picked, error: ', e.message))
