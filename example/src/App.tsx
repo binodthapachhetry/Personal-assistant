@@ -964,7 +964,7 @@ export default function App() {
       ?.completion(
         {
           messages: msgs,
-          n_predict: 2048,
+          n_predict: 128, // Limit maximum output token length to 128
 
           response_format: responseFormat,
           grammar,
