@@ -15,16 +15,18 @@ export const Bubble = ({
   const theme = useContext(ThemeContext)
   const user = useContext(UserContext)
   const currentUserIsAuthor = user?.id === message.author.id
-  const { copyable, timings } = message.metadata || {}
+  const { copyable, timings, system } = message.metadata || {}
+  const isAssistant = message.author.id === 'h3o3lc5xj' && !system
 
   const Container: React.ComponentClass<any> = copyable ? TouchableOpacity : View
   return (
     <Container
       style={{
-        backgroundColor:
-          !currentUserIsAuthor || message.type === 'image'
-            ? theme.colors.secondary
-            : theme.colors.primary,
+        backgroundColor: isAssistant 
+          ? '#6A5ACD' // Assistant message color
+          : currentUserIsAuthor && message.type !== 'image'
+            ? theme.colors.primary
+            : theme.colors.secondary,
         borderBottomLeftRadius: currentUserIsAuthor
           ? theme.borders.messageBorderRadius
           : 0,

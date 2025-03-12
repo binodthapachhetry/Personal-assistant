@@ -5,6 +5,17 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'
 import DocumentPicker from 'react-native-document-picker'
 import type { DocumentPickerResponse } from 'react-native-document-picker'
 import { Chat, darkTheme } from '@flyerhq/react-native-chat-ui'
+
+// Create a custom theme by extending the darkTheme
+const customTheme = {
+  ...darkTheme,
+  colors: {
+    ...darkTheme.colors,
+    background: '#1A1A2E', // Change this to your desired background color
+    inputBackground: '#252A37', // Change input box background
+    secondary: '#6A5ACD', // This will change the assistant bubble color
+  }
+}
 import type { MessageType } from '@flyerhq/react-native-chat-ui'
 import json5 from 'json5'
 import ReactNativeBlobUtil from 'react-native-blob-util'
@@ -1082,7 +1093,7 @@ export default function App() {
     <SafeAreaProvider>
       <Chat
         renderBubble={renderBubble}
-        theme={darkTheme}
+        theme={customTheme}
         messages={messages}
         onSendPress={handleSendPress}
         user={user}
