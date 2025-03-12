@@ -158,6 +158,14 @@ export default function App() {
       await ReactNativeBlobUtil.config({
         fileCache: true,
         path: modelPath,
+        timeout: 60000, // Longer timeout                                                                                                     
+        indicator: true, // Show native loading indicator                                                                                     
+        IOSBackgroundTask: true, // Continue download in background on iOS                                                                    
+        followRedirect: true, // Follow redirects                                                                                             
+        trusty: true, // Trust all certificates (use with caution)                                                                            
+        overwrite: true, // Overwrite existing file                                                                                           
+        // Use a larger buffer size                                                                                                           
+        bufferSize: 8 * 1024 * 1024 // 8MB buffer  
       })
         .fetch('GET', url)
         .progress((received, total) => {
