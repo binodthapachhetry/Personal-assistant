@@ -518,6 +518,9 @@ export default function App() {
         use_mlock: true,
         lora_list: loraFile ? [{ path: loraFile.uri, scaled: 1.0 }] : undefined, // Or lora: loraFile?.uri,
 
+        // Set maximum context window size to 1024 tokens
+        n_ctx: 1024,
+
         // If use deepseek r1 distill
         reasoning_format: 'deepseek',
 
