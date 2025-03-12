@@ -45,7 +45,7 @@ export const Bubble = ({
         <Text
           style={{
             textAlign: 'right',
-            color: '#ccc',
+            color: '#d99ee8',
             paddingRight: 12,
             paddingBottom: 12,
             marginTop: -8,
