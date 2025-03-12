@@ -91,6 +91,8 @@ export default function App() {
   const [messages, setMessages] = useState<MessageType.Any[]>([])
   const [downloading, setDownloading] = useState<boolean>(false)
   const [downloadProgress, setDownloadProgress] = useState<number>(0)
+  const [downloadSpeed, setDownloadSpeed] = useState<string>('')
+  const [downloadPhase, setDownloadPhase] = useState<string>('')
 
   const conversationIdRef = useRef<string>(defaultConversationId)
   const lastModelPathRef = useRef<string | null>(null)
@@ -131,72 +133,313 @@ export default function App() {
       })
   }
 
-  const downloadModel = async (url: string) => {
-    const modelDir = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/models`
-    const modelName = url.split('/').pop() || 'model.gguf'
-    const modelPath = `${modelDir}/${modelName}`
-    
-    // Check if already downloaded
-    if (await ReactNativeBlobUtil.fs.exists(modelPath)) {
-      addSystemMessage('Model already downloaded, loading...')
-      return { uri: modelPath }
+  // Calculate SHA-256 hash of a file
+  const calculateFileHash = async (filePath: string): Promise<string> => {
+    try {
+      // Read file in chunks to avoid memory issues with large files
+      const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks
+      const fileSize = (await ReactNativeBlobUtil.fs.stat(filePath)).size;
+      const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+      
+      // Initialize hash object
+      const crypto = require('crypto-js');
+      let hashObj = crypto.algo.SHA256.create();
+      
+      setDownloadPhase('Verifying file integrity...');
+      
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, fileSize) - 1;
+        
+        // Read chunk as base64
+        const chunkBase64 = await ReactNativeBlobUtil.fs.readFile(filePath, 'base64', start, end);
+        const chunkWordArray = crypto.enc.Base64.parse(chunkBase64);
+        
+        // Update hash with this chunk
+        hashObj = hashObj.update(chunkWordArray);
+        
+        // Update verification progress
+        const progress = Math.floor(((i + 1) / totalChunks) * 100);
+        setDownloadProgress(progress);
+        setMessages((msgs) => {
+          return msgs.map(msg => {
+            if (msg.metadata?.downloading && msg.type === 'text') {
+              return {
+                ...msg,
+                text: `Verifying file integrity... ${progress}%`,
+              };
+            }
+            return msg;
+          });
+        });
+      }
+      
+      // Finalize hash
+      const hash = hashObj.finalize();
+      return hash.toString(crypto.enc.Hex);
+    } catch (error) {
+      console.error('Hash calculation error:', error);
+      throw new Error(`Hash calculation failed: ${error.message}`);
     }
+  }
+  
+  // Verify file size matches expected size
+  const verifyFileSize = async (filePath: string, expectedSize: number): Promise<boolean> => {
+    try {
+      const stats = await ReactNativeBlobUtil.fs.stat(filePath);
+      return stats.size === expectedSize;
+    } catch (error) {
+      console.error('File size verification error:', error);
+      return false;
+    }
+  }
+  
+  // Get file metadata (size, hash) from server
+  const getFileMetadata = async (url: string): Promise<{size: number, hash?: string}> => {
+    try {
+      // Try to get file size with HEAD request
+      const response = await fetch(url, { method: 'HEAD' });
+      const contentLength = response.headers.get('content-length');
+      const contentMd5 = response.headers.get('content-md5');
+      const etag = response.headers.get('etag')?.replace(/"/g, '');
+      
+      return {
+        size: contentLength ? parseInt(contentLength) : 0,
+        hash: contentMd5 || etag
+      };
+    } catch (error) {
+      console.error('Failed to get file metadata:', error);
+      return { size: 0 };
+    }
+  }
+  
+  const downloadModel = async (url: string) => {
+    const modelDir = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/models`;
+    const modelName = url.split('/').pop() || 'model.gguf';
+    const modelPath = `${modelDir}/${modelName}`;
+    const tempPath = `${modelPath}.partial`;
     
     // Create directory if needed
     if (!(await ReactNativeBlobUtil.fs.exists(modelDir))) {
-      await ReactNativeBlobUtil.fs.mkdir(modelDir)
+      await ReactNativeBlobUtil.fs.mkdir(modelDir);
     }
     
-    setDownloading(true)
-    setDownloadProgress(0)
+    // Check if already downloaded
+    if (await ReactNativeBlobUtil.fs.exists(modelPath)) {
+      // Verify the file size matches expected
+      setDownloadPhase('Verifying existing file...');
+      const metadata = await getFileMetadata(url);
+      
+      if (metadata.size > 0) {
+        const sizeMatches = await verifyFileSize(modelPath, metadata.size);
+        if (sizeMatches) {
+          addSystemMessage('Model already downloaded and verified, loading...');
+          return { uri: modelPath };
+        } else {
+          addSystemMessage('Existing file is incomplete or corrupted. Re-downloading...');
+          await ReactNativeBlobUtil.fs.unlink(modelPath);
+        }
+      } else {
+        // If we can't verify, assume it's good
+        addSystemMessage('Model already downloaded, loading...');
+        return { uri: modelPath };
+      }
+    }
+    
+    setDownloading(true);
+    setDownloadProgress(0);
+    setDownloadSpeed('');
+    setDownloadPhase('Preparing download...');
     
     // Add a message to show download progress
-    const msgId = addSystemMessage('Downloading model... 0%', { downloading: true })
+    const msgId = addSystemMessage('Preparing download...', { downloading: true });
     
     try {
-      // Download the file
-      await ReactNativeBlobUtil.config({
-        fileCache: true,
-        path: modelPath,
-        timeout: 60000, // Longer timeout                                                                                                     
-        indicator: true, // Show native loading indicator                                                                                     
-        IOSBackgroundTask: true, // Continue download in background on iOS                                                                    
-        followRedirect: true, // Follow redirects                                                                                             
-        trusty: true, // Trust all certificates (use with caution)                                                                            
-        overwrite: true, // Overwrite existing file                                                                                           
-        // Use a larger buffer size                                                                                                           
-        bufferSize: 8 * 1024 * 1024 // 8MB buffer  
-      })
-        .fetch('GET', url)
-        .progress((received, total) => {
-          const progress = Math.floor((received / total) * 100)
-          setDownloadProgress(progress)
+      // Get file metadata for verification
+      const metadata = await getFileMetadata(url);
+      if (metadata.size === 0) {
+        throw new Error('Could not determine file size');
+      }
+      
+      // Check if we have a partial download to resume
+      let startByte = 0;
+      if (await ReactNativeBlobUtil.fs.exists(tempPath)) {
+        const stats = await ReactNativeBlobUtil.fs.stat(tempPath);
+        if (stats.size < metadata.size) {
+          startByte = stats.size;
+          setDownloadPhase('Resuming download...');
+          addSystemMessage(`Resuming download from ${(startByte / 1024 / 1024).toFixed(2)} MB`);
+        } else {
+          // Partial file is already complete or larger than expected (corrupted?)
+          await ReactNativeBlobUtil.fs.unlink(tempPath);
+        }
+      }
+      
+      // Prepare for chunked download
+      const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks
+      const MAX_CONCURRENT = 3; // Maximum concurrent downloads
+      const totalSize = metadata.size;
+      
+      // Calculate chunks
+      const chunks = [];
+      for (let start = startByte; start < totalSize; start += CHUNK_SIZE) {
+        const end = Math.min(start + CHUNK_SIZE - 1, totalSize - 1);
+        chunks.push({ start, end, downloaded: false });
+      }
+      
+      setDownloadPhase('Downloading in parallel...');
+      
+      // Track download progress
+      let totalDownloaded = startByte;
+      let lastUpdateTime = Date.now();
+      let lastDownloadedBytes = 0;
+      
+      const updateProgress = (additionalBytes: number) => {
+        totalDownloaded += additionalBytes;
+        const progress = Math.floor((totalDownloaded / totalSize) * 100);
+        setDownloadProgress(progress);
+        
+        // Calculate download speed
+        const now = Date.now();
+        const timeDiff = now - lastUpdateTime;
+        if (timeDiff > 1000) { // Update speed every second
+          const bytesPerSec = (totalDownloaded - lastDownloadedBytes) / (timeDiff / 1000);
+          const speedMBps = (bytesPerSec / (1024 * 1024)).toFixed(2);
+          setDownloadSpeed(`${speedMBps} MB/s`);
           
-          // Update the message with progress
+          // Update message with progress and speed
           setMessages((msgs) => {
-            const index = msgs.findIndex((msg) => msg.id === msgId)
+            const index = msgs.findIndex((msg) => msg.id === msgId);
             if (index >= 0) {
               return msgs.map((msg, i) => {
                 if (msg.type === 'text' && i === index) {
                   return {
                     ...msg,
-                    text: `Downloading model... ${progress}%`,
-                  }
+                    text: `Downloading model... ${progress}% (${speedMBps} MB/s)`,
+                  };
                 }
-                return msg
-              })
+                return msg;
+              });
             }
-            return msgs
-          })
-        })
+            return msgs;
+          });
+          
+          lastUpdateTime = now;
+          lastDownloadedBytes = totalDownloaded;
+        }
+      };
       
-      setDownloading(false)
-      addSystemMessage('Download complete!')
-      return { uri: modelPath }
+      // Download chunks in parallel with concurrency limit
+      for (let i = 0; i < chunks.length; i += MAX_CONCURRENT) {
+        const chunkPromises = [];
+        
+        for (let j = 0; j < MAX_CONCURRENT && i + j < chunks.length; j++) {
+          const chunk = chunks[i + j];
+          const chunkPath = `${tempPath}.part${i + j}`;
+          
+          chunkPromises.push(
+            (async () => {
+              await ReactNativeBlobUtil.config({
+                fileCache: true,
+                path: chunkPath,
+                timeout: 60000,
+                IOSBackgroundTask: true,
+                followRedirect: true,
+                trusty: true,
+                bufferSize: 1 * 1024 * 1024 // 1MB buffer for chunks
+              })
+                .fetch('GET', url, {
+                  'Range': `bytes=${chunk.start}-${chunk.end}`
+                })
+                .progress((received) => {
+                  updateProgress(received - (chunk.lastReceived || 0));
+                  chunk.lastReceived = received;
+                });
+              
+              chunk.downloaded = true;
+              return { index: i + j, path: chunkPath };
+            })()
+          );
+        }
+        
+        // Wait for current batch to complete
+        const results = await Promise.all(chunkPromises);
+        
+        // If this is the first batch and we're resuming, append to existing file
+        // Otherwise create/overwrite the file with the first chunk
+        if (i === 0) {
+          if (startByte > 0) {
+            // File exists and we're appending
+            for (const result of results) {
+              const chunkData = await ReactNativeBlobUtil.fs.readFile(result.path, 'base64');
+              await ReactNativeBlobUtil.fs.appendFile(tempPath, chunkData, 'base64');
+              await ReactNativeBlobUtil.fs.unlink(result.path);
+            }
+          } else {
+            // Create new file with first chunk
+            const firstChunk = results.find(r => r.index === 0);
+            if (firstChunk) {
+              await ReactNativeBlobUtil.fs.mv(firstChunk.path, tempPath);
+              
+              // Append other chunks from this batch
+              for (const result of results) {
+                if (result.index !== 0) {
+                  const chunkData = await ReactNativeBlobUtil.fs.readFile(result.path, 'base64');
+                  await ReactNativeBlobUtil.fs.appendFile(tempPath, chunkData, 'base64');
+                  await ReactNativeBlobUtil.fs.unlink(result.path);
+                }
+              }
+            }
+          }
+        } else {
+          // Append all chunks from this batch
+          for (const result of results) {
+            const chunkData = await ReactNativeBlobUtil.fs.readFile(result.path, 'base64');
+            await ReactNativeBlobUtil.fs.appendFile(tempPath, chunkData, 'base64');
+            await ReactNativeBlobUtil.fs.unlink(result.path);
+          }
+        }
+      }
+      
+      // Verify downloaded file
+      setDownloadPhase('Verifying download...');
+      setDownloadProgress(0);
+      setMessages((msgs) => {
+        return msgs.map(msg => {
+          if (msg.id === msgId && msg.type === 'text') {
+            return {
+              ...msg,
+              text: 'Verifying download...',
+            };
+          }
+          return msg;
+        });
+      });
+      
+      // Verify file size
+      const downloadedSize = (await ReactNativeBlobUtil.fs.stat(tempPath)).size;
+      if (downloadedSize !== totalSize) {
+        throw new Error(`File size mismatch: expected ${totalSize}, got ${downloadedSize}`);
+      }
+      
+      // If we have a hash from the server, verify it
+      if (metadata.hash) {
+        const downloadedHash = await calculateFileHash(tempPath);
+        if (downloadedHash.toLowerCase() !== metadata.hash.toLowerCase()) {
+          throw new Error('File hash verification failed');
+        }
+      }
+      
+      // Move temp file to final location
+      await ReactNativeBlobUtil.fs.mv(tempPath, modelPath);
+      
+      setDownloading(false);
+      addSystemMessage('Download complete and verified!');
+      return { uri: modelPath };
     } catch (error) {
-      setDownloading(false)
-      addSystemMessage(`Download failed: ${error.message}`)
-      throw error
+      setDownloading(false);
+      addSystemMessage(`Download failed: ${error.message}`);
+      throw error;
     }
   }
 
@@ -870,7 +1113,7 @@ export default function App() {
         textInputProps={{
           editable: !!context && !downloading,
           placeholder: downloading 
-            ? `Downloading model... ${downloadProgress}%` 
+            ? `${downloadPhase} ${downloadProgress}% ${downloadSpeed}` 
             : !context
               ? 'Press the file icon to get a model'
               : 'Type your message here',
