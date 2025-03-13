@@ -29,6 +29,37 @@ struct embedding_batch {
     int original_dim;    // Original embedding dimension
     int stored_dim;      // Dimension after potential reduction
     bool is_shadow;      // Whether this is a shadow vector (lower quality)
+    float importance;    // User-defined importance (0-1), affects retention policy
+};
+
+// Memory-mapped embedding storage
+struct mmap_embedding_store {
+    llama_mmap mapping;
+    size_t count;
+    size_t capacity;
+    size_t dim;
+    bool is_quantized;
+    
+    // Header contains metadata for each embedding
+    struct embedding_header {
+        uint32_t text_offset;
+        uint32_t text_length;
+        int64_t timestamp;
+        int16_t battery_level;
+        float scale;
+        float min_val;
+        int16_t original_dim;
+        int16_t stored_dim;
+        uint8_t flags;  // bit 0: is_shadow, bits 1-7: reserved
+        float importance;
+    };
+    
+    embedding_header* headers;
+    char* text_data;
+    union {
+        float* float_data;
+        uint8_t* quant_data;
+    } vectors;
 };
 
 // the ring buffer works similarly to std::deque, but with a fixed capacity
@@ -2524,6 +2555,17 @@ struct search_result {
     float score;
     int64_t timestamp;
     int source_type; // 0=text search, 1=vector search, 2=hybrid
+    float relevance_score; // Combined relevance score (text + vector)
+    float recency_score;   // Time-based score for recency
+    float importance;      // User-defined importance
+};
+
+// Text search result for first-stage filtering
+struct text_match {
+    std::string text;
+    float score;
+    size_t embedding_index; // Index to the corresponding embedding
+    int64_t timestamp;
 };
 
 // Compute cosine similarity between two vectors
@@ -2535,6 +2577,88 @@ static float cosine_similarity(const float* a, const float* b, size_t n) {
         norm_b += b[i] * b[i];
     }
     return dot / (sqrt(norm_a) * sqrt(norm_b));
+}
+
+// Perform text search as first filtering stage
+static std::vector<text_match> text_search_filter(
+    const std::string& query,
+    const std::vector<embedding_batch>& embeddings,
+    size_t max_results = 100) {
+    
+    std::vector<text_match> results;
+    
+    // Convert query to lowercase for case-insensitive matching
+    std::string query_lower = query;
+    std::transform(query_lower.begin(), query_lower.end(), query_lower.begin(), 
+                   [](unsigned char c){ return std::tolower(c); });
+    
+    // Simple text matching for now - could be replaced with BM25 or other algorithms
+    for (size_t i = 0; i < embeddings.size(); i++) {
+        const auto& batch = embeddings[i];
+        
+        // Skip entries that are too old (7 days)
+        int64_t current_time = std::time(nullptr);
+        if (current_time - batch.timestamp > 7 * 24 * 60 * 60) {
+            continue;
+        }
+        
+        // Convert text to lowercase
+        std::string text_lower = batch.text;
+        std::transform(text_lower.begin(), text_lower.end(), text_lower.begin(), 
+                       [](unsigned char c){ return std::tolower(c); });
+        
+        // Check if query terms are in the text
+        float score = 0.0f;
+        if (text_lower.find(query_lower) != std::string::npos) {
+            // Exact match gets high score
+            score = 1.0f;
+        } else {
+            // Split query into words and check for partial matches
+            std::istringstream iss(query_lower);
+            std::vector<std::string> query_words;
+            std::string word;
+            while (iss >> word) {
+                if (word.length() > 3) { // Only consider words longer than 3 chars
+                    query_words.push_back(word);
+                }
+            }
+            
+            // Count matching words
+            int matches = 0;
+            for (const auto& qword : query_words) {
+                if (text_lower.find(qword) != std::string::npos) {
+                    matches++;
+                }
+            }
+            
+            if (matches > 0 && !query_words.empty()) {
+                score = static_cast<float>(matches) / query_words.size();
+            }
+        }
+        
+        // Add to results if there's any match
+        if (score > 0.0f) {
+            text_match match;
+            match.text = batch.text;
+            match.score = score;
+            match.embedding_index = i;
+            match.timestamp = batch.timestamp;
+            results.push_back(match);
+        }
+    }
+    
+    // Sort by text match score (descending)
+    std::sort(results.begin(), results.end(), 
+              [](const text_match& a, const text_match& b) {
+                  return a.score > b.score;
+              });
+    
+    // Limit results
+    if (results.size() > max_results) {
+        results.resize(max_results);
+    }
+    
+    return results;
 }
 
 // Hybrid search function that combines text and vector search
@@ -2550,73 +2674,458 @@ static std::vector<search_result> hybrid_search(
     
     std::vector<search_result> results;
     
-    // Determine if we should use vector search based on device conditions
-    bool use_vectors = high_priority || should_use_vector_search(
-        battery_level, is_charging, thermal_headroom, available_memory_mb);
+    // First stage: Text search to filter candidates
+    std::vector<text_match> text_matches = text_search_filter(query, embeddings);
     
-    // If we can't use vector search, return empty results
-    // (The caller should fall back to text search)
-    if (!use_vectors || embeddings.empty()) {
-        return results;
-    }
-    
-    // Calculate result limit based on available memory
-    size_t result_limit = available_memory_mb < 200 ? 20 : 50;
-    
-    // Temporary vector for dequantized embeddings
-    std::vector<float> temp_embedding(query_embedding.size());
-    
-    // Calculate similarities and store results
-    for (const auto& batch : embeddings) {
-        // Skip entries that are too old (7 days)
-        int64_t current_time = std::time(nullptr);
-        if (current_time - batch.timestamp > 7 * 24 * 60 * 60) {
-            continue;
+    if (text_matches.empty()) {
+        // No text matches, try direct vector search if resources allow
+        if (high_priority || should_use_vector_search(
+                battery_level, is_charging, thermal_headroom, available_memory_mb)) {
+            // Fall back to vector-only search with stricter threshold
+            float threshold = high_priority ? 0.75f : 0.8f;
+            
+            // Calculate result limit based on available memory
+            size_t result_limit = available_memory_mb < 200 ? 20 : 50;
+            
+            // Temporary vector for dequantized embeddings
+            std::vector<float> temp_embedding(query_embedding.size());
+            
+            for (size_t i = 0; i < embeddings.size(); i++) {
+                const auto& batch = embeddings[i];
+                
+                // Skip entries that are too old (7 days)
+                int64_t current_time = std::time(nullptr);
+                if (current_time - batch.timestamp > 7 * 24 * 60 * 60) {
+                    continue;
+                }
+                
+                // Dequantize if needed
+                const float* emb_ptr;
+                if (!batch.quantized_embedding.empty()) {
+                    dequantize_embeddings(
+                        batch.quantized_embedding.data(),
+                        temp_embedding.data(),
+                        temp_embedding.size(),
+                        batch.scale,
+                        batch.min_val
+                    );
+                    emb_ptr = temp_embedding.data();
+                } else {
+                    emb_ptr = batch.embedding.data();
+                }
+                
+                // Calculate similarity
+                float similarity = cosine_similarity(query_embedding.data(), emb_ptr, query_embedding.size());
+                
+                if (similarity > threshold) {
+                    search_result result;
+                    result.text = batch.text;
+                    result.score = similarity;
+                    result.timestamp = batch.timestamp;
+                    result.source_type = 1; // Vector search
+                    result.relevance_score = similarity;
+                    
+                    // Calculate recency score (1.0 = now, 0.0 = 7 days old)
+                    float age_days = (current_time - batch.timestamp) / (24.0f * 60.0f * 60.0f);
+                    result.recency_score = std::max(0.0f, 1.0f - (age_days / 7.0f));
+                    
+                    // Get importance or default to 0.5
+                    result.importance = batch.importance > 0.0f ? batch.importance : 0.5f;
+                    
+                    results.push_back(result);
+                }
+            }
         }
+    } else {
+        // Determine if we should use vector search based on device conditions
+        bool use_vectors = high_priority || should_use_vector_search(
+            battery_level, is_charging, thermal_headroom, available_memory_mb);
         
-        // Dequantize if needed
-        const float* emb_ptr;
-        if (!batch.quantized_embedding.empty()) {
-            dequantize_embeddings(
-                batch.quantized_embedding.data(),
-                temp_embedding.data(),
-                temp_embedding.size(),
-                batch.scale,
-                batch.min_val
-            );
-            emb_ptr = temp_embedding.data();
+        // Calculate result limit based on available memory
+        size_t result_limit = available_memory_mb < 200 ? 20 : 50;
+        
+        if (use_vectors) {
+            // Second stage: Vector search on text-filtered candidates
+            // Temporary vector for dequantized embeddings
+            std::vector<float> temp_embedding(query_embedding.size());
+            
+            for (const auto& match : text_matches) {
+                const auto& batch = embeddings[match.embedding_index];
+                
+                // Dequantize if needed
+                const float* emb_ptr;
+                if (!batch.quantized_embedding.empty()) {
+                    dequantize_embeddings(
+                        batch.quantized_embedding.data(),
+                        temp_embedding.data(),
+                        temp_embedding.size(),
+                        batch.scale,
+                        batch.min_val
+                    );
+                    emb_ptr = temp_embedding.data();
+                } else {
+                    emb_ptr = batch.embedding.data();
+                }
+                
+                // Calculate vector similarity
+                float similarity = cosine_similarity(query_embedding.data(), emb_ptr, query_embedding.size());
+                
+                // Combine text and vector scores
+                // Adjust weights based on battery level
+                float text_weight = battery_level < 30 ? 0.7f : 0.5f;
+                float vector_weight = 1.0f - text_weight;
+                
+                float combined_score = (text_weight * match.score) + (vector_weight * similarity);
+                
+                search_result result;
+                result.text = match.text;
+                result.score = combined_score;
+                result.timestamp = match.timestamp;
+                result.source_type = 2; // Hybrid
+                result.relevance_score = combined_score;
+                
+                // Calculate recency score (1.0 = now, 0.0 = 7 days old)
+                int64_t current_time = std::time(nullptr);
+                float age_days = (current_time - match.timestamp) / (24.0f * 60.0f * 60.0f);
+                result.recency_score = std::max(0.0f, 1.0f - (age_days / 7.0f));
+                
+                // Get importance or default to 0.5
+                result.importance = batch.importance > 0.0f ? batch.importance : 0.5f;
+                
+                results.push_back(result);
+            }
         } else {
-            emb_ptr = batch.embedding.data();
-        }
-        
-        // Calculate similarity
-        float similarity = cosine_similarity(query_embedding.data(), emb_ptr, query_embedding.size());
-        
-        // Add to results if similarity is above threshold
-        // Use a lower threshold when battery is low
-        float threshold = battery_level < 30 ? 0.6f : 0.7f;
-        if (similarity > threshold) {
-            search_result result;
-            result.text = batch.text;
-            result.score = similarity;
-            result.timestamp = batch.timestamp;
-            result.source_type = 1; // Vector search
-            results.push_back(result);
+            // If vector search is disabled, just use text search results
+            for (const auto& match : text_matches) {
+                search_result result;
+                result.text = match.text;
+                result.score = match.score;
+                result.timestamp = match.timestamp;
+                result.source_type = 0; // Text search
+                result.relevance_score = match.score;
+                
+                // Calculate recency score (1.0 = now, 0.0 = 7 days old)
+                int64_t current_time = std::time(nullptr);
+                float age_days = (current_time - match.timestamp) / (24.0f * 60.0f * 60.0f);
+                result.recency_score = std::max(0.0f, 1.0f - (age_days / 7.0f));
+                
+                // Get importance from the original embedding
+                result.importance = embeddings[match.embedding_index].importance > 0.0f ? 
+                    embeddings[match.embedding_index].importance : 0.5f;
+                
+                results.push_back(result);
+            }
         }
     }
     
-    // Sort by similarity score (descending)
+    // Final ranking: combine relevance, recency, and importance
+    for (auto& result : results) {
+        // Weighted combination (adjust weights as needed)
+        const float relevance_weight = 0.6f;
+        const float recency_weight = 0.2f;
+        const float importance_weight = 0.2f;
+        
+        result.score = (relevance_weight * result.relevance_score) +
+                       (recency_weight * result.recency_score) +
+                       (importance_weight * result.importance);
+    }
+    
+    // Sort by final score (descending)
     std::sort(results.begin(), results.end(), 
               [](const search_result& a, const search_result& b) {
                   return a.score > b.score;
               });
     
     // Limit results
+    size_t result_limit = available_memory_mb < 200 ? 20 : 50;
     if (results.size() > result_limit) {
         results.resize(result_limit);
     }
     
     return results;
+}
+
+// Initialize memory-mapped embedding storage
+static mmap_embedding_store* init_mmap_embedding_store(
+    const char* filename,
+    size_t capacity,
+    size_t dim,
+    bool is_quantized) {
+    
+    mmap_embedding_store* store = new mmap_embedding_store();
+    
+    // Calculate storage requirements
+    size_t header_size = sizeof(mmap_embedding_store::embedding_header) * capacity;
+    size_t text_data_size = 1024 * 1024 * 16; // 16MB for text storage
+    
+    size_t vector_data_size;
+    if (is_quantized) {
+        vector_data_size = capacity * dim * sizeof(uint8_t); // 1 byte per dimension
+    } else {
+        vector_data_size = capacity * dim * sizeof(float); // 4 bytes per dimension
+    }
+    
+    size_t total_size = header_size + text_data_size + vector_data_size;
+    
+    // Initialize memory mapping
+    store->mapping = llama_mmap_create(filename, total_size);
+    if (!store->mapping.addr) {
+        delete store;
+        return nullptr;
+    }
+    
+    // Set up pointers
+    store->count = 0;
+    store->capacity = capacity;
+    store->dim = dim;
+    store->is_quantized = is_quantized;
+    
+    char* base_addr = (char*)store->mapping.addr;
+    store->headers = (mmap_embedding_store::embedding_header*)base_addr;
+    store->text_data = base_addr + header_size;
+    
+    if (is_quantized) {
+        store->vectors.quant_data = (uint8_t*)(base_addr + header_size + text_data_size);
+    } else {
+        store->vectors.float_data = (float*)(base_addr + header_size + text_data_size);
+    }
+    
+    return store;
+}
+
+// Add embedding to memory-mapped storage
+static bool add_embedding_to_mmap(
+    mmap_embedding_store* store,
+    const embedding_batch& batch) {
+    
+    if (store->count >= store->capacity) {
+        return false; // Store is full
+    }
+    
+    // Add header
+    size_t idx = store->count;
+    store->headers[idx].timestamp = batch.timestamp;
+    store->headers[idx].battery_level = batch.battery_level;
+    store->headers[idx].scale = batch.scale;
+    store->headers[idx].min_val = batch.min_val;
+    store->headers[idx].original_dim = batch.original_dim;
+    store->headers[idx].stored_dim = batch.stored_dim;
+    store->headers[idx].flags = batch.is_shadow ? 1 : 0;
+    store->headers[idx].importance = batch.importance;
+    
+    // Add text
+    size_t text_offset = 0;
+    if (idx > 0) {
+        // Find the end of the previous text
+        size_t prev_idx = idx - 1;
+        text_offset = store->headers[prev_idx].text_offset + store->headers[prev_idx].text_length;
+    }
+    
+    size_t text_length = batch.text.length();
+    if (text_offset + text_length >= 1024 * 1024 * 16) {
+        return false; // Text storage full
+    }
+    
+    store->headers[idx].text_offset = text_offset;
+    store->headers[idx].text_length = text_length;
+    
+    // Copy text
+    memcpy(store->text_data + text_offset, batch.text.c_str(), text_length);
+    
+    // Copy vector data
+    if (store->is_quantized) {
+        if (!batch.quantized_embedding.empty()) {
+            // Copy quantized data
+            memcpy(
+                store->vectors.quant_data + (idx * store->dim),
+                batch.quantized_embedding.data(),
+                batch.stored_dim * sizeof(uint8_t)
+            );
+        } else {
+            // Quantize and copy
+            std::vector<uint8_t> quantized(batch.stored_dim);
+            float scale, min_val;
+            quantize_embeddings(
+                batch.embedding.data(),
+                quantized.data(),
+                batch.stored_dim,
+                &scale,
+                &min_val
+            );
+            
+            memcpy(
+                store->vectors.quant_data + (idx * store->dim),
+                quantized.data(),
+                batch.stored_dim * sizeof(uint8_t)
+            );
+            
+            // Update scale and min_val in header
+            store->headers[idx].scale = scale;
+            store->headers[idx].min_val = min_val;
+        }
+    } else {
+        // Copy float data
+        if (!batch.embedding.empty()) {
+            memcpy(
+                store->vectors.float_data + (idx * store->dim),
+                batch.embedding.data(),
+                batch.stored_dim * sizeof(float)
+            );
+        } else {
+            // Dequantize and copy
+            std::vector<float> dequantized(batch.stored_dim);
+            dequantize_embeddings(
+                batch.quantized_embedding.data(),
+                dequantized.data(),
+                batch.stored_dim,
+                batch.scale,
+                batch.min_val
+            );
+            
+            memcpy(
+                store->vectors.float_data + (idx * store->dim),
+                dequantized.data(),
+                batch.stored_dim * sizeof(float)
+            );
+        }
+    }
+    
+    store->count++;
+    return true;
+}
+
+// Get embedding from memory-mapped storage
+static bool get_embedding_from_mmap(
+    const mmap_embedding_store* store,
+    size_t idx,
+    embedding_batch& batch) {
+    
+    if (idx >= store->count) {
+        return false;
+    }
+    
+    // Get header
+    const auto& header = store->headers[idx];
+    
+    // Get text
+    batch.text.assign(store->text_data + header.text_offset, header.text_length);
+    
+    // Get metadata
+    batch.timestamp = header.timestamp;
+    batch.battery_level = header.battery_level;
+    batch.scale = header.scale;
+    batch.min_val = header.min_val;
+    batch.original_dim = header.original_dim;
+    batch.stored_dim = header.stored_dim;
+    batch.is_shadow = (header.flags & 1) != 0;
+    batch.importance = header.importance;
+    
+    // Get vector data
+    if (store->is_quantized) {
+        // Get quantized data
+        batch.quantized_embedding.resize(header.stored_dim);
+        memcpy(
+            batch.quantized_embedding.data(),
+            store->vectors.quant_data + (idx * store->dim),
+            header.stored_dim * sizeof(uint8_t)
+        );
+        
+        // Optionally dequantize
+        batch.embedding.clear();
+    } else {
+        // Get float data
+        batch.embedding.resize(header.stored_dim);
+        memcpy(
+            batch.embedding.data(),
+            store->vectors.float_data + (idx * store->dim),
+            header.stored_dim * sizeof(float)
+        );
+        
+        batch.quantized_embedding.clear();
+    }
+    
+    return true;
+}
+
+// Close and free memory-mapped embedding storage
+static void free_mmap_embedding_store(mmap_embedding_store* store) {
+    if (store) {
+        llama_mmap_close(&store->mapping);
+        delete store;
+    }
+}
+
+// Perform emergency cleanup of embeddings when battery is critical
+static bool emergency_embedding_cleanup(
+    mmap_embedding_store* store,
+    int battery_level,
+    bool is_charging) {
+    
+    // Only perform cleanup if battery is critical and not charging
+    if (battery_level > 10 || is_charging) {
+        return false;
+    }
+    
+    // Keep track of which embeddings to keep
+    std::vector<bool> keep_mask(store->count, false);
+    std::vector<size_t> indices(store->count);
+    for (size_t i = 0; i < store->count; i++) {
+        indices[i] = i;
+    }
+    
+    // Sort indices by importance and recency
+    std::sort(indices.begin(), indices.end(), [store](size_t a, size_t b) {
+        float score_a = store->headers[a].importance + 
+                       (1.0f - std::min(1.0f, (std::time(nullptr) - store->headers[a].timestamp) / 
+                                       (7.0f * 24.0f * 60.0f * 60.0f))) * 0.5f;
+        
+        float score_b = store->headers[b].importance + 
+                       (1.0f - std::min(1.0f, (std::time(nullptr) - store->headers[b].timestamp) / 
+                                       (7.0f * 24.0f * 60.0f * 60.0f))) * 0.5f;
+        
+        return score_a > score_b;
+    });
+    
+    // Keep only the top 30% of embeddings
+    size_t keep_count = store->count * 0.3;
+    for (size_t i = 0; i < keep_count; i++) {
+        keep_mask[indices[i]] = true;
+    }
+    
+    // Create a new store with only the kept embeddings
+    mmap_embedding_store* new_store = init_mmap_embedding_store(
+        "temp_embeddings.bin",
+        store->capacity,
+        store->dim,
+        store->is_quantized
+    );
+    
+    if (!new_store) {
+        return false;
+    }
+    
+    // Copy kept embeddings to new store
+    embedding_batch batch;
+    for (size_t i = 0; i < store->count; i++) {
+        if (keep_mask[i]) {
+            if (get_embedding_from_mmap(store, i, batch)) {
+                add_embedding_to_mmap(new_store, batch);
+            }
+        }
+    }
+    
+    // Close old store
+    llama_mmap_close(&store->mapping);
+    
+    // Copy new store data to old store
+    *store = *new_store;
+    
+    // Don't delete the new_store pointer since we've copied its contents
+    // Just release the mapping to avoid double-free
+    new_store->mapping.addr = nullptr;
+    delete new_store;
+    
+    return true;
 }
 
 // utils
@@ -2685,25 +3194,49 @@ static int get_adaptive_embedding_dimension(
     int battery_level,
     bool is_charging,
     float thermal_headroom,
-    size_t available_memory_mb) {
+    size_t available_memory_mb,
+    bool high_priority = false) {
     
-    // Full dimension when charging or high battery
-    if (is_charging || battery_level > 80) {
+    // High priority embeddings get more dimensions
+    if (high_priority) {
+        // Still apply some reduction for critical conditions
+        if (battery_level < 10 && !is_charging) {
+            return std::min(384, original_dim);
+        }
+        
+        // For high priority, use full dimensions when possible
+        if (is_charging || battery_level > 50 || thermal_headroom > 0.4f) {
+            return original_dim;
+        }
+        
+        // Moderate reduction for high priority under constraints
+        return std::min(512, original_dim);
+    }
+    
+    // Full dimension when charging with high battery and good thermal
+    if (is_charging && battery_level > 80 && thermal_headroom > 0.5f) {
         return original_dim;
     }
     
-    // Severe resource constraints - use minimum dimension
-    if (battery_level < 15 || thermal_headroom < 0.15f || available_memory_mb < 100) {
+    // Critical resource constraints - use minimum dimension
+    if ((battery_level < 15 && !is_charging) || 
+        thermal_headroom < 0.15f || 
+        available_memory_mb < 100) {
         return std::min(128, original_dim);
     }
     
     // Low battery - reduce dimension significantly
-    if (battery_level < 30) {
+    if (battery_level < 30 && !is_charging) {
         return std::min(256, original_dim);
     }
     
     // Medium battery - reduce dimension moderately
-    if (battery_level < 50) {
+    if (battery_level < 50 || thermal_headroom < 0.3f) {
+        return std::min(384, original_dim);
+    }
+    
+    // Memory constraints - adjust based on available memory
+    if (available_memory_mb < 200) {
         return std::min(384, original_dim);
     }
     
@@ -2727,10 +3260,38 @@ static void reduce_embedding_dimension(
     
     reduced.resize(target_dim);
     
-    // Simple truncation for now
-    // TODO: Implement more sophisticated dimension reduction like PCA
-    for (int i = 0; i < target_dim; i++) {
-        reduced[i] = original[i];
+    if (target_dim >= original_dim / 2) {
+        // Simple truncation for higher target dimensions
+        for (int i = 0; i < target_dim; i++) {
+            reduced[i] = original[i];
+        }
+    } else {
+        // Averaging for more aggressive reduction
+        int block_size = original_dim / target_dim;
+        for (int i = 0; i < target_dim; i++) {
+            float sum = 0.0f;
+            int start_idx = i * block_size;
+            int end_idx = std::min(start_idx + block_size, original_dim);
+            
+            for (int j = start_idx; j < end_idx; j++) {
+                sum += original[j];
+            }
+            
+            reduced[i] = sum / (end_idx - start_idx);
+        }
+        
+        // Normalize the reduced vector
+        float norm = 0.0f;
+        for (int i = 0; i < target_dim; i++) {
+            norm += reduced[i] * reduced[i];
+        }
+        
+        norm = sqrt(norm);
+        if (norm > 0) {
+            for (int i = 0; i < target_dim; i++) {
+                reduced[i] /= norm;
+            }
+        }
     }
 }
 

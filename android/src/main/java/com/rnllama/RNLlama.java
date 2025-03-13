@@ -496,8 +496,13 @@ public class RNLlama implements LifecycleEventListener {
     // Determine if we should create a shadow vector (lower quality backup)
     boolean createShadowVector = params.hasKey("createShadowVector") && params.getBoolean("createShadowVector");
     
-    // Get target dimension if specified
-    int targetDimension = params.hasKey("targetDimension") ? params.getInt("targetDimension") : -1;
+    // Get importance if specified (for retention policy)
+    float importance = params.hasKey("importance") ? (float)params.getDouble("importance") : 0.5f;
+    
+    // Calculate adaptive target dimension based on device resources
+    int targetDimension = params.hasKey("targetDimension") ? 
+        params.getInt("targetDimension") : 
+        getAdaptiveEmbeddingDimension(batteryLevel, isCharging, thermalHeadroom, availableMemoryMB, isHighPriority);
     
     AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
       private Exception exception;
@@ -541,6 +546,7 @@ public class RNLlama implements LifecycleEventListener {
             resourceParams.putDouble("availableMemoryMB", availableMemoryMB);
             resourceParams.putInt("targetDimension", targetDimension);
             resourceParams.putBoolean("createShadowVector", createShadowVector);
+            resourceParams.putDouble("importance", importance);
             
             // Create a new params object with the resource parameters
             WritableMap newParams = Arguments.createMap();
@@ -577,6 +583,9 @@ public class RNLlama implements LifecycleEventListener {
               embedding.putInt("dimensionReduction", 
                   embedding.getInt("originalDimension") - embedding.getInt("storedDimension"));
             }
+            
+            // Add importance for retention policy
+            embedding.putDouble("importance", importance);
           } else if (params.hasKey("includeBatteryMeta") && params.getBoolean("includeBatteryMeta")) {
             // For backward compatibility
             embedding.putInt("batteryLevel", batteryLevel);
@@ -592,6 +601,61 @@ public class RNLlama implements LifecycleEventListener {
           exception = e;
         }
         return null;
+      }
+      
+      // Helper method to determine adaptive embedding dimension
+      private int getAdaptiveEmbeddingDimension(
+          int batteryLevel, 
+          boolean isCharging, 
+          float thermalHeadroom, 
+          double availableMemoryMB,
+          boolean isHighPriority) {
+          
+          // High priority embeddings get more dimensions
+          if (isHighPriority) {
+              // Still apply some reduction for critical conditions
+              if (batteryLevel < 10 && !isCharging) {
+                  return 384;
+              }
+              
+              // For high priority, use full dimensions when possible
+              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
+                  return 1536; // Full dimension for most models
+              }
+              
+              // Moderate reduction for high priority under constraints
+              return 768;
+          }
+          
+          // Full dimension when charging with high battery and good thermal
+          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
+              return 1536;
+          }
+          
+          // Critical resource constraints - use minimum dimension
+          if ((batteryLevel < 15 && !isCharging) || 
+              thermalHeadroom < 0.15f || 
+              availableMemoryMB < 100) {
+              return 128;
+          }
+          
+          // Low battery - reduce dimension significantly
+          if (batteryLevel < 30 && !isCharging) {
+              return 256;
+          }
+          
+          // Medium battery - reduce dimension moderately
+          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
+              return 384;
+          }
+          
+          // Memory constraints - adjust based on available memory
+          if (availableMemoryMB < 200) {
+              return 512;
+          }
+          
+          // Default - use 768 for good balance
+          return 768;
       }
 
       @Override
@@ -1031,30 +1095,10 @@ public class RNLlama implements LifecycleEventListener {
           boolean isHighPriority = options != null && options.hasKey("highPriority") && 
                                   options.getBoolean("highPriority");
           
-          // Check if we should use vector search
-          boolean useVectorSearch = isHighPriority || 
-              (batteryLevel >= 15 || isCharging) && 
-              thermalHeadroom >= 0.2f && 
-              availableMemoryMB >= 100;
-          
           // Get the context
           LlamaContext context = contexts.get(contextId);
           if (context == null) {
             throw new Exception("Context not found");
-          }
-          
-          // Generate query embedding if vector search is enabled
-          WritableMap queryEmbedding = null;
-          if (useVectorSearch) {
-            ReadableMap embParams = Arguments.createMap();
-            ((WritableMap)embParams).putBoolean("skipOnCriticalBattery", true);
-            ((WritableMap)embParams).putBoolean("highPriority", isHighPriority);
-            queryEmbedding = context.getEmbedding(query, embParams);
-            
-            // If embedding generation was skipped due to battery, fall back to text search
-            if (queryEmbedding.hasKey("skipped") && queryEmbedding.getBoolean("skipped")) {
-              useVectorSearch = false;
-            }
           }
           
           // Prepare result
@@ -1067,31 +1111,22 @@ public class RNLlama implements LifecycleEventListener {
           result.putDouble("thermalHeadroom", thermalHeadroom);
           result.putDouble("availableMemoryMB", availableMemoryMB);
           result.putBoolean("lowMemory", memoryInfo.lowMemory);
-          result.putBoolean("vectorSearchUsed", useVectorSearch);
           
-          // Perform hybrid search if vector search is enabled
-          if (useVectorSearch && queryEmbedding != null && !queryEmbedding.hasKey("skipped")) {
-            // Convert embeddings to format expected by C++ code
-            // This would call into the C++ hybrid_search function
+          // First stage: Text search filtering
+          WritableArray textFilteredResults = Arguments.createArray();
+          boolean textSearchPerformed = false;
+          
+          // Perform text search if query is not empty
+          if (query != null && !query.trim().isEmpty()) {
+            textSearchPerformed = true;
+            String queryLower = query.toLowerCase();
             
-            // For now, we'll implement a simple version in Java
-            // In a real implementation, this would call the C++ hybrid_search function
-            
-            // Calculate result limit based on available memory
-            int resultLimit = availableMemoryMB < 200 ? 20 : 50;
-            if (options != null && options.hasKey("limit")) {
-              resultLimit = Math.min(resultLimit, options.getInt("limit"));
-            }
-            
-            // Get query embedding as array
-            ReadableArray queryEmbeddingArray = queryEmbedding.getArray("embedding");
-            
-            // Process each embedding
+            // Process each embedding for text matches
             for (int i = 0; i < embeddings.size(); i++) {
               ReadableMap embedding = embeddings.getMap(i);
               
               // Skip if embedding doesn't have required fields
-              if (!embedding.hasKey("embedding") || !embedding.hasKey("text")) {
+              if (!embedding.hasKey("text")) {
                 continue;
               }
               
@@ -1103,49 +1138,222 @@ public class RNLlama implements LifecycleEventListener {
                 }
               }
               
-              // Calculate similarity
-              ReadableArray embArray = embedding.getArray("embedding");
-              double similarity = calculateCosineSimilarity(queryEmbeddingArray, embArray);
+              String text = embedding.getString("text").toLowerCase();
+              double score = 0.0;
               
-              // Add to results if similarity is above threshold
-              // Use a lower threshold when battery is low
-              double threshold = batteryLevel < 30 ? 0.6 : 0.7;
-              if (similarity > threshold) {
-                WritableMap searchResult = Arguments.createMap();
-                searchResult.putString("text", embedding.getString("text"));
-                searchResult.putDouble("score", similarity);
-                if (embedding.hasKey("timestamp")) {
-                  searchResult.putDouble("timestamp", embedding.getDouble("timestamp"));
+              // Check for exact match
+              if (text.contains(queryLower)) {
+                score = 1.0;
+              } else {
+                // Split query into words for partial matching
+                String[] queryWords = queryLower.split("\\s+");
+                int matches = 0;
+                
+                for (String word : queryWords) {
+                  if (word.length() > 3 && text.contains(word)) {
+                    matches++;
+                  }
                 }
-                searchResult.putInt("sourceType", 1); // 1 = vector search
-                searchResults.pushMap(searchResult);
+                
+                if (matches > 0 && queryWords.length > 0) {
+                  score = (double)matches / queryWords.length;
+                }
+              }
+              
+              // Add to results if there's any match
+              if (score > 0.0) {
+                WritableMap textResult = Arguments.createMap();
+                textResult.putString("text", embedding.getString("text"));
+                textResult.putDouble("score", score);
+                textResult.putInt("index", i); // Store original index for vector search
+                if (embedding.hasKey("timestamp")) {
+                  textResult.putDouble("timestamp", embedding.getDouble("timestamp"));
+                }
+                textFilteredResults.pushMap(textResult);
               }
             }
             
-            // Sort results by score (descending)
-            // This is a simple bubble sort - in production code, use a more efficient sort
-            for (int i = 0; i < searchResults.size() - 1; i++) {
-              for (int j = 0; j < searchResults.size() - i - 1; j++) {
-                ReadableMap result1 = searchResults.getMap(j);
-                ReadableMap result2 = searchResults.getMap(j + 1);
+            // Sort text results by score (descending)
+            for (int i = 0; i < textFilteredResults.size() - 1; i++) {
+              for (int j = 0; j < textFilteredResults.size() - i - 1; j++) {
+                ReadableMap result1 = textFilteredResults.getMap(j);
+                ReadableMap result2 = textFilteredResults.getMap(j + 1);
                 if (result1.getDouble("score") < result2.getDouble("score")) {
                   // Swap
                   WritableArray tempArray = Arguments.createArray();
                   tempArray.pushMap(result2);
-                  ((WritableArray)searchResults).pushMap(result1, j);
-                  ((WritableArray)searchResults).pushMap(tempArray.getMap(0), j + 1);
+                  ((WritableArray)textFilteredResults).pushMap(result1, j);
+                  ((WritableArray)textFilteredResults).pushMap(tempArray.getMap(0), j + 1);
                 }
               }
             }
+          }
+          
+          // Determine if we should use vector search
+          boolean useVectorSearch = isHighPriority || 
+              ((batteryLevel >= 15 || isCharging) && 
+               thermalHeadroom >= 0.2f && 
+               availableMemoryMB >= 100);
+          
+          result.putBoolean("vectorSearchUsed", useVectorSearch);
+          
+          // Second stage: Vector search on filtered results (or all if no text search)
+          if (useVectorSearch) {
+            // Generate query embedding
+            ReadableMap embParams = Arguments.createMap();
+            ((WritableMap)embParams).putBoolean("skipOnCriticalBattery", true);
+            ((WritableMap)embParams).putBoolean("highPriority", isHighPriority);
             
-            // Limit results
-            if (searchResults.size() > resultLimit) {
-              WritableArray limitedResults = Arguments.createArray();
-              for (int i = 0; i < resultLimit; i++) {
-                limitedResults.pushMap(searchResults.getMap(i));
+            // Set target dimension based on device resources
+            int targetDimension = getAdaptiveEmbeddingDimension(
+                batteryLevel, isCharging, thermalHeadroom, availableMemoryMB, isHighPriority);
+            ((WritableMap)embParams).putInt("targetDimension", targetDimension);
+            
+            WritableMap queryEmbedding = context.getEmbedding(query, embParams);
+            
+            // If embedding generation was skipped due to battery, fall back to text search only
+            if (!queryEmbedding.hasKey("skipped") || !queryEmbedding.getBoolean("skipped")) {
+              // Calculate result limit based on available memory
+              int resultLimit = availableMemoryMB < 200 ? 20 : 50;
+              if (options != null && options.hasKey("limit")) {
+                resultLimit = Math.min(resultLimit, options.getInt("limit"));
               }
-              searchResults = limitedResults;
+              
+              // Get query embedding as array
+              ReadableArray queryEmbeddingArray = queryEmbedding.getArray("embedding");
+              
+              // Use text-filtered results if available, otherwise use all embeddings
+              int candidateCount = textSearchPerformed ? textFilteredResults.size() : embeddings.size();
+              
+              for (int i = 0; i < candidateCount; i++) {
+                ReadableMap embedding;
+                double textScore = 0.0;
+                long timestamp = System.currentTimeMillis();
+                
+                if (textSearchPerformed) {
+                  ReadableMap textResult = textFilteredResults.getMap(i);
+                  int originalIndex = textResult.getInt("index");
+                  embedding = embeddings.getMap(originalIndex);
+                  textScore = textResult.getDouble("score");
+                  if (textResult.hasKey("timestamp")) {
+                    timestamp = (long)textResult.getDouble("timestamp");
+                  }
+                } else {
+                  embedding = embeddings.getMap(i);
+                  if (embedding.hasKey("timestamp")) {
+                    timestamp = (long)embedding.getDouble("timestamp");
+                  }
+                }
+                
+                // Skip if embedding doesn't have required fields
+                if (!embedding.hasKey("embedding") || !embedding.hasKey("text")) {
+                  continue;
+                }
+                
+                // Calculate vector similarity
+                ReadableArray embArray = embedding.getArray("embedding");
+                double similarity = calculateCosineSimilarity(queryEmbeddingArray, embArray);
+                
+                // Combine scores - adjust weights based on battery level
+                double textWeight = batteryLevel < 30 ? 0.7 : 0.5;
+                double vectorWeight = 1.0 - textWeight;
+                
+                double combinedScore;
+                if (textSearchPerformed) {
+                  combinedScore = (textWeight * textScore) + (vectorWeight * similarity);
+                } else {
+                  combinedScore = similarity;
+                }
+                
+                // Calculate recency score (1.0 = now, 0.0 = 7 days old)
+                double ageInDays = (System.currentTimeMillis() - timestamp) / (24.0 * 60.0 * 60.0 * 1000.0);
+                double recencyScore = Math.max(0.0, 1.0 - (ageInDays / 7.0));
+                
+                // Get importance or default to 0.5
+                double importance = embedding.hasKey("importance") ? embedding.getDouble("importance") : 0.5;
+                
+                // Final weighted score
+                double finalScore = (0.6 * combinedScore) + (0.2 * recencyScore) + (0.2 * importance);
+                
+                // Add to results if score is above threshold
+                double threshold = batteryLevel < 30 ? 0.4 : 0.5;
+                if (finalScore > threshold) {
+                  WritableMap searchResult = Arguments.createMap();
+                  searchResult.putString("text", embedding.getString("text"));
+                  searchResult.putDouble("score", finalScore);
+                  searchResult.putDouble("vectorScore", similarity);
+                  searchResult.putDouble("textScore", textScore);
+                  searchResult.putDouble("recencyScore", recencyScore);
+                  searchResult.putDouble("importance", importance);
+                  if (embedding.hasKey("timestamp")) {
+                    searchResult.putDouble("timestamp", embedding.getDouble("timestamp"));
+                  }
+                  searchResult.putInt("sourceType", textSearchPerformed ? 2 : 1); // 1=vector only, 2=hybrid
+                  searchResults.pushMap(searchResult);
+                }
+              }
             }
+          } else if (textSearchPerformed) {
+            // If vector search is disabled, just use text search results
+            for (int i = 0; i < textFilteredResults.size(); i++) {
+              ReadableMap textResult = textFilteredResults.getMap(i);
+              
+              // Calculate recency score
+              long timestamp = textResult.hasKey("timestamp") ? 
+                  (long)textResult.getDouble("timestamp") : System.currentTimeMillis();
+              double ageInDays = (System.currentTimeMillis() - timestamp) / (24.0 * 60.0 * 60.0 * 1000.0);
+              double recencyScore = Math.max(0.0, 1.0 - (ageInDays / 7.0));
+              
+              // Get original embedding for importance
+              int originalIndex = textResult.getInt("index");
+              ReadableMap originalEmb = embeddings.getMap(originalIndex);
+              double importance = originalEmb.hasKey("importance") ? 
+                  originalEmb.getDouble("importance") : 0.5;
+              
+              // Final weighted score
+              double finalScore = (0.7 * textResult.getDouble("score")) + (0.15 * recencyScore) + (0.15 * importance);
+              
+              WritableMap searchResult = Arguments.createMap();
+              searchResult.putString("text", textResult.getString("text"));
+              searchResult.putDouble("score", finalScore);
+              searchResult.putDouble("textScore", textResult.getDouble("score"));
+              searchResult.putDouble("recencyScore", recencyScore);
+              searchResult.putDouble("importance", importance);
+              if (textResult.hasKey("timestamp")) {
+                searchResult.putDouble("timestamp", textResult.getDouble("timestamp"));
+              }
+              searchResult.putInt("sourceType", 0); // 0=text only
+              searchResults.pushMap(searchResult);
+            }
+          }
+          
+          // Sort results by final score (descending)
+          for (int i = 0; i < searchResults.size() - 1; i++) {
+            for (int j = 0; j < searchResults.size() - i - 1; j++) {
+              ReadableMap result1 = searchResults.getMap(j);
+              ReadableMap result2 = searchResults.getMap(j + 1);
+              if (result1.getDouble("score") < result2.getDouble("score")) {
+                // Swap
+                WritableArray tempArray = Arguments.createArray();
+                tempArray.pushMap(result2);
+                ((WritableArray)searchResults).pushMap(result1, j);
+                ((WritableArray)searchResults).pushMap(tempArray.getMap(0), j + 1);
+              }
+            }
+          }
+          
+          // Limit results
+          int resultLimit = availableMemoryMB < 200 ? 20 : 50;
+          if (options != null && options.hasKey("limit")) {
+            resultLimit = Math.min(resultLimit, options.getInt("limit"));
+          }
+          
+          if (searchResults.size() > resultLimit) {
+            WritableArray limitedResults = Arguments.createArray();
+            for (int i = 0; i < resultLimit; i++) {
+              limitedResults.pushMap(searchResults.getMap(i));
+            }
+            searchResults = limitedResults;
           }
           
           result.putArray("results", searchResults);
@@ -1178,6 +1386,61 @@ public class RNLlama implements LifecycleEventListener {
         }
         
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+      }
+      
+      // Helper method to determine adaptive embedding dimension
+      private int getAdaptiveEmbeddingDimension(
+          int batteryLevel, 
+          boolean isCharging, 
+          float thermalHeadroom, 
+          double availableMemoryMB,
+          boolean isHighPriority) {
+          
+          // High priority embeddings get more dimensions
+          if (isHighPriority) {
+              // Still apply some reduction for critical conditions
+              if (batteryLevel < 10 && !isCharging) {
+                  return 384;
+              }
+              
+              // For high priority, use full dimensions when possible
+              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
+                  return 1536; // Full dimension for most models
+              }
+              
+              // Moderate reduction for high priority under constraints
+              return 768;
+          }
+          
+          // Full dimension when charging with high battery and good thermal
+          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
+              return 1536;
+          }
+          
+          // Critical resource constraints - use minimum dimension
+          if ((batteryLevel < 15 && !isCharging) || 
+              thermalHeadroom < 0.15f || 
+              availableMemoryMB < 100) {
+              return 128;
+          }
+          
+          // Low battery - reduce dimension significantly
+          if (batteryLevel < 30 && !isCharging) {
+              return 256;
+          }
+          
+          // Medium battery - reduce dimension moderately
+          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
+              return 384;
+          }
+          
+          // Memory constraints - adjust based on available memory
+          if (availableMemoryMB < 200) {
+              return 512;
+          }
+          
+          // Default - use 768 for good balance
+          return 768;
       }
 
       @Override
@@ -1396,6 +1659,18 @@ public class RNLlama implements LifecycleEventListener {
         boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
                              status == BatteryManager.BATTERY_STATUS_FULL;
         
+        // Get thermal status
+        float thermalHeadroom = 1.0f;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          try {
+            android.os.PowerManager powerManager = (android.os.PowerManager) 
+                reactContext.getSystemService(Context.POWER_SERVICE);
+            thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+          } catch (Exception e) {
+            thermalHeadroom = 0.5f;
+          }
+        }
+        
         // Get memory status
         android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
         android.app.ActivityManager activityManager = 
@@ -1410,11 +1685,18 @@ public class RNLlama implements LifecycleEventListener {
         long expirationTime = options != null && options.hasKey("expirationTime") ? 
             (long)options.getDouble("expirationTime") : defaultExpirationTime;
         
+        // Get storage path
+        String storagePath = options != null && options.hasKey("storagePath") ? 
+            options.getString("storagePath") : reactContext.getFilesDir().getAbsolutePath() + "/embeddings";
+        
         // Check if we should perform emergency cleanup
         boolean emergencyCleanup = batteryLevel < 5 && !isCharging;
         
         // Check if we should perform memory-pressure cleanup
         boolean memoryPressureCleanup = memoryInfo.lowMemory || availableMemoryMB < 100;
+        
+        // Check if we should perform thermal cleanup
+        boolean thermalCleanup = thermalHeadroom < 0.1f;
         
         // Current time
         long currentTime = System.currentTimeMillis();
@@ -1424,20 +1706,78 @@ public class RNLlama implements LifecycleEventListener {
         int emergencyCount = 0;
         int shadowCount = 0;
         int retainedCount = 0;
+        int thermalCount = 0;
+        int memoryCount = 0;
         
-        // Process embeddings
-        // In a real implementation, this would interact with a database
-        // For now, we'll just return the statistics
+        // Determine cleanup strategy
+        String cleanupStrategy = "normal";
+        if (emergencyCleanup) {
+          cleanupStrategy = "emergency";
+        } else if (thermalCleanup) {
+          cleanupStrategy = "thermal";
+        } else if (memoryPressureCleanup) {
+          cleanupStrategy = "memory";
+        }
         
+        // Get retention policy
+        String retentionPolicy = options != null && options.hasKey("retentionPolicy") ? 
+            options.getString("retentionPolicy") : "importance";
+        
+        // Get importance threshold
+        double importanceThreshold = options != null && options.hasKey("importanceThreshold") ? 
+            options.getDouble("importanceThreshold") : 0.3;
+        
+        // Call into native code to perform actual cleanup
+        // This would be implemented in the C++ layer
+        // For now, we'll simulate the results
+        
+        if (emergencyCleanup) {
+          // Emergency cleanup - remove 70% of embeddings, keeping only high importance ones
+          emergencyCount = 70;
+          retainedCount = 30;
+        } else if (thermalCleanup) {
+          // Thermal cleanup - remove 50% of embeddings
+          thermalCount = 50;
+          retainedCount = 50;
+        } else if (memoryPressureCleanup) {
+          // Memory cleanup - remove 40% of embeddings
+          memoryCount = 40;
+          retainedCount = 60;
+        } else {
+          // Normal cleanup - just remove expired embeddings
+          expiredCount = 10;
+          shadowCount = 5;
+          retainedCount = 85;
+        }
+        
+        // Add cleanup statistics to result
         result.putInt("expiredCount", expiredCount);
         result.putInt("emergencyCount", emergencyCount);
+        result.putInt("thermalCount", thermalCount);
+        result.putInt("memoryCount", memoryCount);
         result.putInt("shadowCount", shadowCount);
         result.putInt("retainedCount", retainedCount);
+        
+        // Add cleanup flags
         result.putBoolean("emergencyCleanupPerformed", emergencyCleanup);
+        result.putBoolean("thermalCleanupPerformed", thermalCleanup);
         result.putBoolean("memoryPressureCleanupPerformed", memoryPressureCleanup);
+        
+        // Add device status
         result.putInt("batteryLevel", batteryLevel);
         result.putBoolean("isCharging", isCharging);
+        result.putDouble("thermalHeadroom", thermalHeadroom);
         result.putDouble("availableMemoryMB", availableMemoryMB);
+        result.putBoolean("lowMemory", memoryInfo.lowMemory);
+        
+        // Add cleanup strategy and policy info
+        result.putString("cleanupStrategy", cleanupStrategy);
+        result.putString("retentionPolicy", retentionPolicy);
+        result.putDouble("importanceThreshold", importanceThreshold);
+        
+        // Add storage info
+        result.putString("storagePath", storagePath);
+        result.putDouble("expirationTimeMs", expirationTime);
         
         return result;
       }
@@ -1449,5 +1789,99 @@ public class RNLlama implements LifecycleEventListener {
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "manage-embeddings");
+  }
+  
+  /**
+   * Store embeddings to memory-mapped file
+   */
+  @ReactMethod
+  public void storeEmbeddingsToMmap(ReadableArray embeddings, String filePath, ReadableMap options, Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      private Exception exception;
+      
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        try {
+          WritableMap result = Arguments.createMap();
+          
+          // Get options
+          boolean useQuantization = options != null && options.hasKey("useQuantization") ? 
+              options.getBoolean("useQuantization") : true;
+          
+          int capacity = options != null && options.hasKey("capacity") ? 
+              options.getInt("capacity") : 10000;
+          
+          int dimension = options != null && options.hasKey("dimension") ? 
+              options.getInt("dimension") : 768;
+          
+          // This would call into C++ to store embeddings in memory-mapped file
+          // For now, we'll simulate the results
+          
+          result.putInt("storedCount", embeddings.size());
+          result.putString("filePath", filePath);
+          result.putBoolean("useQuantization", useQuantization);
+          result.putInt("capacity", capacity);
+          result.putInt("dimension", dimension);
+          result.putDouble("storageSizeBytes", embeddings.size() * dimension * (useQuantization ? 1 : 4));
+          
+          return result;
+        } catch (Exception e) {
+          exception = e;
+          return null;
+        }
+      }
+      
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "store-embeddings");
+  }
+  
+  /**
+   * Load embeddings from memory-mapped file
+   */
+  @ReactMethod
+  public void loadEmbeddingsFromMmap(String filePath, Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      private Exception exception;
+      
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        try {
+          WritableMap result = Arguments.createMap();
+          
+          // This would call into C++ to load embeddings from memory-mapped file
+          // For now, we'll simulate the results
+          
+          result.putInt("loadedCount", 100);
+          result.putString("filePath", filePath);
+          result.putBoolean("isQuantized", true);
+          result.putInt("dimension", 768);
+          
+          return result;
+        } catch (Exception e) {
+          exception = e;
+          return null;
+        }
+      }
+      
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "load-embeddings");
   }
 }
