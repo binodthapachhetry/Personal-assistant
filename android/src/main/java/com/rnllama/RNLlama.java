@@ -1391,101 +1391,102 @@ public class RNLlama implements LifecycleEventListener {
         }
         return null;
       }
-      
-  // Helper method to determine adaptive embedding dimension
-  private int getAdaptiveEmbeddingDimension(
-          int batteryLevel, 
-          boolean isCharging, 
-          float thermalHeadroom, 
-          double availableMemoryMB,
-          boolean isHighPriority) {
-          
-          // High priority embeddings get more dimensions
-          if (isHighPriority) {
-              // Still apply some reduction for critical conditions
-              if (batteryLevel < 10 && !isCharging) {
-                  return 384;
-              }
-              
-              // For high priority, use full dimensions when possible
-              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
-                  return 1536; // Full dimension for most models
-              }
-              
-              // Moderate reduction for high priority under constraints
-              return 768;
-          }
-          
-          // Full dimension when charging with high battery and good thermal
-          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
-              return 1536;
-          }
-          
-          // Critical resource constraints - use minimum dimension
-          if ((batteryLevel < 15 && !isCharging) || 
-              thermalHeadroom < 0.15f || 
-              availableMemoryMB < 100) {
-              return 128;
-          }
-          
-          // Low battery - reduce dimension significantly
-          if (batteryLevel < 30 && !isCharging) {
-              return 256;
-          }
-          
-          // Medium battery - reduce dimension moderately
-          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
-              return 384;
-          }
-          
-          // Memory constraints - adjust based on available memory
-          if (availableMemoryMB < 200) {
-              return 512;
-          }
-          
-          // Default - use 768 for good balance
-          return 768;
-      }
 
-      // Helper method to calculate cosine similarity
-      private double calculateCosineSimilarity(ReadableArray a, ReadableArray b) {
-        double dotProduct = 0.0;
-        double normA = 0.0;
-        double normB = 0.0;
-        
-        int length = Math.min(a.size(), b.size());
-        
-        for (int i = 0; i < length; i++) {
-          double valA = a.getDouble(i);
-          double valB = b.getDouble(i);
+  // // Helper method to determine adaptive embedding dimension
+  // private int getAdaptiveEmbeddingDimension(
+  //         int batteryLevel, 
+  //         boolean isCharging, 
+  //         float thermalHeadroom, 
+  //         double availableMemoryMB,
+  //         boolean isHighPriority) {
           
-          dotProduct += valA * valB;
-          normA += valA * valA;
-          normB += valB * valB;
-        }
+  //         // High priority embeddings get more dimensions
+  //         if (isHighPriority) {
+  //             // Still apply some reduction for critical conditions
+  //             if (batteryLevel < 10 && !isCharging) {
+  //                 return 384;
+  //             }
+              
+  //             // For high priority, use full dimensions when possible
+  //             if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
+  //                 return 1536; // Full dimension for most models
+  //             }
+              
+  //             // Moderate reduction for high priority under constraints
+  //             return 768;
+  //         }
+          
+  //         // Full dimension when charging with high battery and good thermal
+  //         if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
+  //             return 1536;
+  //         }
+          
+  //         // Critical resource constraints - use minimum dimension
+  //         if ((batteryLevel < 15 && !isCharging) || 
+  //             thermalHeadroom < 0.15f || 
+  //             availableMemoryMB < 100) {
+  //             return 128;
+  //         }
+          
+  //         // Low battery - reduce dimension significantly
+  //         if (batteryLevel < 30 && !isCharging) {
+  //             return 256;
+  //         }
+          
+  //         // Medium battery - reduce dimension moderately
+  //         if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
+  //             return 384;
+  //         }
+          
+  //         // Memory constraints - adjust based on available memory
+  //         if (availableMemoryMB < 200) {
+  //             return 512;
+  //         }
+          
+  //         // Default - use 768 for good balance
+  //         return 768;
+  //     }
+
+  //     // Helper method to calculate cosine similarity
+  //     private double calculateCosineSimilarity(ReadableArray a, ReadableArray b) {
+  //       double dotProduct = 0.0;
+  //       double normA = 0.0;
+  //       double normB = 0.0;
         
-        if (normA == 0 || normB == 0) {
-          return 0;
-        }
+  //       int length = Math.min(a.size(), b.size());
         
-        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-      }
+  //       for (int i = 0; i < length; i++) {
+  //         double valA = a.getDouble(i);
+  //         double valB = b.getDouble(i);
+          
+  //         dotProduct += valA * valB;
+  //         normA += valA * valA;
+  //         normB += valB * valB;
+  //       }
+        
+  //       if (normA == 0 || normB == 0) {
+  //         return 0;
+  //       }
+        
+  //       return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  //     }
       
 
-      @Override
-      protected void onPostExecute(WritableMap result) {
-        if (exception != null) {
-          promise.reject(exception);
-          return;
-        }
-        promise.resolve(result);
-        tasks.remove(this);
-      }
-    };
+  //     @Override
+  //     protected void onPostExecute(WritableMap result) {
+  //       if (exception != null) {
+  //         promise.reject(exception);
+  //         return;
+  //       }
+  //       promise.resolve(result);
+  //       tasks.remove(this);
+  //     }
+  //   };
     
-    task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
-    tasks.put(task, "hybrid-search-" + contextId);
-  }
+  //   task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+  //   tasks.put(task, "hybrid-search-" + contextId);
+  // }
+
   /**
    * Enable memory-mapped storage for LLM context
    */
@@ -2026,60 +2027,60 @@ public class RNLlama implements LifecycleEventListener {
           return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
       }
       
-      // Helper method to determine adaptive embedding dimension
-      private int getAdaptiveEmbeddingDimension(
-          int batteryLevel, 
-          boolean isCharging, 
-          float thermalHeadroom, 
-          double availableMemoryMB,
-          boolean isHighPriority) {
+      // // Helper method to determine adaptive embedding dimension
+      // private int getAdaptiveEmbeddingDimension(
+      //     int batteryLevel, 
+      //     boolean isCharging, 
+      //     float thermalHeadroom, 
+      //     double availableMemoryMB,
+      //     boolean isHighPriority) {
           
-          // High priority embeddings get more dimensions
-          if (isHighPriority) {
-              // Still apply some reduction for critical conditions
-              if (batteryLevel < 10 && !isCharging) {
-                  return 384;
-              }
+      //     // High priority embeddings get more dimensions
+      //     if (isHighPriority) {
+      //         // Still apply some reduction for critical conditions
+      //         if (batteryLevel < 10 && !isCharging) {
+      //             return 384;
+      //         }
               
-              // For high priority, use full dimensions when possible
-              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
-                  return 1536; // Full dimension for most models
-              }
+      //         // For high priority, use full dimensions when possible
+      //         if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
+      //             return 1536; // Full dimension for most models
+      //         }
               
-              // Moderate reduction for high priority under constraints
-              return 768;
-          }
+      //         // Moderate reduction for high priority under constraints
+      //         return 768;
+      //     }
           
-          // Full dimension when charging with high battery and good thermal
-          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
-              return 1536;
-          }
+      //     // Full dimension when charging with high battery and good thermal
+      //     if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
+      //         return 1536;
+      //     }
           
-          // Critical resource constraints - use minimum dimension
-          if ((batteryLevel < 15 && !isCharging) || 
-              thermalHeadroom < 0.15f || 
-              availableMemoryMB < 100) {
-              return 128;
-          }
+      //     // Critical resource constraints - use minimum dimension
+      //     if ((batteryLevel < 15 && !isCharging) || 
+      //         thermalHeadroom < 0.15f || 
+      //         availableMemoryMB < 100) {
+      //         return 128;
+      //     }
           
-          // Low battery - reduce dimension significantly
-          if (batteryLevel < 30 && !isCharging) {
-              return 256;
-          }
+      //     // Low battery - reduce dimension significantly
+      //     if (batteryLevel < 30 && !isCharging) {
+      //         return 256;
+      //     }
           
-          // Medium battery - reduce dimension moderately
-          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
-              return 384;
-          }
+      //     // Medium battery - reduce dimension moderately
+      //     if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
+      //         return 384;
+      //     }
           
-          // Memory constraints - adjust based on available memory
-          if (availableMemoryMB < 200) {
-              return 512;
-          }
+      //     // Memory constraints - adjust based on available memory
+      //     if (availableMemoryMB < 200) {
+      //         return 512;
+      //     }
           
-          // Default - use 768 for good balance
-          return 768;
-      }
+      //     // Default - use 768 for good balance
+      //     return 768;
+      // }
       
       @Override
       protected void onPostExecute(WritableMap result) {
