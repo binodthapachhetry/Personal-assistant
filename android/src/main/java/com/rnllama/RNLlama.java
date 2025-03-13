@@ -24,6 +24,8 @@ import java.util.Random;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.PushbackInputStream;
+import java.io.RandomAccessFile;
+import java.util.Map;
 
 import java.util.Iterator;
 import java.util.Map;
@@ -554,12 +556,30 @@ public class RNLlama implements LifecycleEventListener {
             
             // Create a new params object with the resource parameters
             WritableMap newParams = Arguments.createMap();
-            // for (Iterator<Map.Entry<String, Object>> it = params.getEntryMap().entrySet().iterator(); it.hasNext();) {
-            for (Iterator<String> it = params.getKeySet().iterator(); it.hasNext();) {
-              String key = it.next();
-              ReadableMapEntry entry = params.getEntry(key);  // Get key/value pair
-              Map.Entry<String, Object> entry = it.next();
-              newParams.putString(entry.getKey(), entry.getValue().toString());
+            // Copy all existing params
+            ReadableMapKeySetIterator iterator = params.keySetIterator();
+            while (iterator.hasNextKey()) {
+              String key = iterator.nextKey();
+              switch (params.getType(key)) {
+                case Null:
+                  newParams.putNull(key);
+                  break;
+                case Boolean:
+                  newParams.putBoolean(key, params.getBoolean(key));
+                  break;
+                case Number:
+                  newParams.putDouble(key, params.getDouble(key));
+                  break;
+                case String:
+                  newParams.putString(key, params.getString(key));
+                  break;
+                case Map:
+                  newParams.putMap(key, params.getMap(key));
+                  break;
+                case Array:
+                  newParams.putArray(key, params.getArray(key));
+                  break;
+              }
             }
             newParams.putMap("resourceParams", resourceParams);
             embeddingParams = newParams;
@@ -571,7 +591,7 @@ public class RNLlama implements LifecycleEventListener {
           if (params.hasKey("includeResourceMeta") && params.getBoolean("includeResourceMeta")) {
             embedding.putInt("batteryLevel", batteryLevel);
             embedding.putBoolean("isCharging", isCharging);
-            embedding.putFloat("thermalHeadroom", thermalHeadroom);
+            embedding.putDouble("thermalHeadroom", thermalHeadroom);
             embedding.putDouble("availableMemoryMB", availableMemoryMB);
             embedding.putBoolean("lowMemory", memoryInfo.lowMemory);
             
@@ -610,8 +630,8 @@ public class RNLlama implements LifecycleEventListener {
         return null;
       }
       
-      // Helper method to determine adaptive embedding dimension
-      private int getAdaptiveEmbeddingDimension(
+  // Helper method to determine adaptive embedding dimension
+  private int getAdaptiveEmbeddingDimension(
           int batteryLevel, 
           boolean isCharging, 
           float thermalHeadroom, 
@@ -1189,8 +1209,8 @@ public class RNLlama implements LifecycleEventListener {
                   // Swap
                   WritableArray tempArray = Arguments.createArray();
                   tempArray.pushMap(result2);
-                  ((WritableArray)textFilteredResults).pushMap(result1, j);
-                  ((WritableArray)textFilteredResults).pushMap(tempArray.getMap(0), j + 1);
+                  ((WritableArray)textFilteredResults).pushMap(result1);
+                  ((WritableArray)textFilteredResults).pushMap(tempArray.getMap(0));
                 }
               }
             }
@@ -1463,13 +1483,8 @@ public class RNLlama implements LifecycleEventListener {
     tasks.put(task, "hybrid-search-" + contextId);
   }
   /**
-   * Get device resource status for RAG operations
-   */
-  @ReactMethod
-  /**
    * Enable memory-mapped storage for LLM context
    */
-  @ReactMethod
   public void enableMmapStorage(String path, ReadableMap options, Promise promise) {
     AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
       private Exception exception;
@@ -1493,7 +1508,8 @@ public class RNLlama implements LifecycleEventListener {
               (long)options.getDouble("reserveSize") : 1024 * 1024 * 1024; // Default 1GB
           
           // Call into LlamaContext to enable mmap
-          boolean success = LlamaContext.enableMmapStorage(path, useCompression, reserveSize);
+          // TODO: Implement native mmap storage
+          boolean success = false; //LlamaContext.enableMmapStorage(path, useCompression, reserveSize);
           
           // Return results
           result.putBoolean("success", success);
