@@ -1472,20 +1472,20 @@ public class RNLlama implements LifecycleEventListener {
   //     }
       
 
-  //     @Override
-  //     protected void onPostExecute(WritableMap result) {
-  //       if (exception != null) {
-  //         promise.reject(exception);
-  //         return;
-  //       }
-  //       promise.resolve(result);
-  //       tasks.remove(this);
-  //     }
-  //   };
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    };
     
-  //   task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
-  //   tasks.put(task, "hybrid-search-" + contextId);
-  // }
+    task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "hybrid-search-" + contextId);
+  }
 
   /**
    * Enable memory-mapped storage for LLM context
