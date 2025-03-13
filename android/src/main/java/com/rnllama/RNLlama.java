@@ -1471,13 +1471,7 @@ public class RNLlama implements LifecycleEventListener {
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
       }
       
-      // Helper method to determine adaptive embedding dimension
-      private int getAdaptiveEmbeddingDimension(
-          int batteryLevel, 
-          boolean isCharging, 
-          float thermalHeadroom, 
-          double availableMemoryMB,
-          boolean isHighPriority) {
+      // Helper method to determine adaptive embedding dimension - class version
           
           // High priority embeddings get more dimensions
           if (isHighPriority) {
