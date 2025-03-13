@@ -1459,6 +1459,61 @@ public class RNLlama implements LifecycleEventListener {
    * Get device resource status for RAG operations
    */
   @ReactMethod
+  /**
+   * Enable memory-mapped storage for LLM context
+   */
+  @ReactMethod
+  public void enableMmapStorage(String path, ReadableMap options, Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      private Exception exception;
+      
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        try {
+          WritableMap result = Arguments.createMap();
+          
+          // Create directory if it doesn't exist
+          File directory = new File(path);
+          if (!directory.exists()) {
+              directory.mkdirs();
+          }
+          
+          // Get options
+          boolean useCompression = options != null && options.hasKey("useCompression") ? 
+              options.getBoolean("useCompression") : true;
+              
+          long reserveSize = options != null && options.hasKey("reserveSize") ? 
+              (long)options.getDouble("reserveSize") : 1024 * 1024 * 1024; // Default 1GB
+          
+          // Call into LlamaContext to enable mmap
+          boolean success = LlamaContext.enableMmapStorage(path, useCompression, reserveSize);
+          
+          // Return results
+          result.putBoolean("success", success);
+          result.putString("path", path);
+          result.putBoolean("useCompression", useCompression);
+          result.putDouble("reserveSizeBytes", reserveSize);
+          
+          return result;
+        } catch (Exception e) {
+          exception = e;
+          return null;
+        }
+      }
+      
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "enable-mmap");
+  }
+  
   public void getDeviceResourceStatus(Promise promise) {
     AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
       @Override
@@ -1561,6 +1616,87 @@ public class RNLlama implements LifecycleEventListener {
   }
   
   /**
+   * Perform memory-pressure triggered garbage collection
+   */
+  @ReactMethod
+  public void performMemoryCleanup(ReadableMap options, Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
+        // Get memory status
+        android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+        android.app.ActivityManager activityManager = 
+            (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+        activityManager.getMemoryInfo(memoryInfo);
+        
+        double availableMemoryMB = memoryInfo.availMem / (1024.0 * 1024.0);
+        double totalMemoryMB = memoryInfo.totalMem / (1024.0 * 1024.0);
+        double memoryUsagePercent = 100.0 * (1.0 - (memoryInfo.availMem / (double)memoryInfo.totalMem));
+        
+        // Get options
+        boolean forceCleanup = options != null && options.hasKey("force") ? 
+            options.getBoolean("force") : false;
+            
+        double memoryThreshold = options != null && options.hasKey("memoryThreshold") ? 
+            options.getDouble("memoryThreshold") : 15.0; // Default 15% free memory threshold
+        
+        // Check if cleanup is needed
+        boolean needsCleanup = forceCleanup || 
+            memoryInfo.lowMemory || 
+            availableMemoryMB < 100 || 
+            (100.0 - memoryUsagePercent) < memoryThreshold;
+        
+        result.putBoolean("needsCleanup", needsCleanup);
+        result.putDouble("availableMemoryMB", availableMemoryMB);
+        result.putDouble("totalMemoryMB", totalMemoryMB);
+        result.putDouble("memoryUsagePercent", memoryUsagePercent);
+        result.putBoolean("lowMemory", memoryInfo.lowMemory);
+        
+        if (needsCleanup) {
+          // Perform cleanup actions
+          
+          // 1. Suggest Java garbage collection
+          System.gc();
+          
+          // 2. Clear any caches
+          for (LlamaContext context : contexts.values()) {
+            if (context != null) {
+              context.clearCache();
+            }
+          }
+          
+          // 3. Trim memory in native code
+          for (LlamaContext context : contexts.values()) {
+            if (context != null) {
+              context.trimMemory();
+            }
+          }
+          
+          // 4. Check memory after cleanup
+          activityManager.getMemoryInfo(memoryInfo);
+          double availableAfterMB = memoryInfo.availMem / (1024.0 * 1024.0);
+          double memoryUsageAfterPercent = 100.0 * (1.0 - (memoryInfo.availMem / (double)memoryInfo.totalMem));
+          
+          result.putDouble("availableAfterMB", availableAfterMB);
+          result.putDouble("memoryUsageAfterPercent", memoryUsageAfterPercent);
+          result.putDouble("memoryFreedMB", availableAfterMB - availableMemoryMB);
+        }
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "memory-cleanup");
+  }
+  
+  /**
    * Check if embedding generation should be deferred based on current device conditions
    */
   @ReactMethod
@@ -1635,6 +1771,299 @@ public class RNLlama implements LifecycleEventListener {
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "defer-check");
+  }
+  
+  /**
+   * Perform vector search using memory-mapped embeddings
+   */
+  @ReactMethod
+  public void mmapVectorSearch(double id, final String query, final String mmapFilePath, final ReadableMap options, final Promise promise) {
+    final int contextId = (int) id;
+    
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      private Exception exception;
+      
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        try {
+          WritableMap result = Arguments.createMap();
+          
+          // Get device resource status
+          IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+          Intent batteryStatus = reactContext.getApplicationContext().registerReceiver(null, ifilter);
+          
+          int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+          int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+          int batteryLevel = (int)(level * 100 / (float)scale);
+          
+          int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+          boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                               status == BatteryManager.BATTERY_STATUS_FULL;
+          
+          // Get thermal status
+          float thermalHeadroom = 1.0f;
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+              android.os.PowerManager powerManager = (android.os.PowerManager) 
+                  reactContext.getSystemService(Context.POWER_SERVICE);
+              thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+            } catch (Exception e) {
+              thermalHeadroom = 0.5f;
+            }
+          }
+          
+          // Get memory status
+          android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+          android.app.ActivityManager activityManager = 
+              (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+          activityManager.getMemoryInfo(memoryInfo);
+          double availableMemoryMB = memoryInfo.availMem / (1024.0 * 1024.0);
+          
+          // Check if this is a high-priority query
+          boolean isHighPriority = options != null && options.hasKey("highPriority") && 
+                                  options.getBoolean("highPriority");
+          
+          // Get the context
+          LlamaContext context = contexts.get(contextId);
+          if (context == null) {
+            throw new Exception("Context not found");
+          }
+          
+          // Check if file exists
+          File file = new File(mmapFilePath);
+          if (!file.exists()) {
+              throw new Exception("Embedding file does not exist: " + mmapFilePath);
+          }
+          
+          // Open the memory-mapped file
+          RandomAccessFile memoryMappedFile = new RandomAccessFile(mmapFilePath, "r");
+          java.nio.channels.FileChannel fileChannel = memoryMappedFile.getChannel();
+          
+          // Map the file into memory (read-only)
+          java.nio.MappedByteBuffer buffer = fileChannel.map(
+              java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, memoryMappedFile.length());
+          
+          // Read header information
+          int magicNumber = buffer.getInt();
+          if (magicNumber != 0xEMBED01) {
+              throw new Exception("Invalid embedding file format");
+          }
+          
+          int count = buffer.getInt();
+          int capacity = buffer.getInt();
+          int dimension = buffer.getInt();
+          boolean isQuantized = buffer.getInt() == 1;
+          long timestamp = buffer.getLong();
+          
+          // Skip reserved fields
+          buffer.getInt();
+          buffer.getInt();
+          
+          // Calculate embedding size
+          int embeddingSize = dimension * (isQuantized ? 1 : 4);
+          int headerSize = 32;
+          
+          // Generate query embedding
+          ReadableMap embParams = Arguments.createMap();
+          ((WritableMap)embParams).putBoolean("skipOnCriticalBattery", true);
+          ((WritableMap)embParams).putBoolean("highPriority", isHighPriority);
+          
+          // Set target dimension based on device resources
+          int targetDimension = getAdaptiveEmbeddingDimension(
+              batteryLevel, isCharging, thermalHeadroom, availableMemoryMB, isHighPriority);
+          ((WritableMap)embParams).putInt("targetDimension", targetDimension);
+          
+          WritableMap queryEmbedding = context.getEmbedding(query, embParams);
+          
+          // If embedding generation was skipped due to battery, return early
+          if (queryEmbedding.hasKey("skipped") && queryEmbedding.getBoolean("skipped")) {
+              result.putBoolean("skipped", true);
+              result.putInt("batteryLevel", batteryLevel);
+              return result;
+          }
+          
+          // Get query embedding as array
+          ReadableArray queryEmbeddingArray = queryEmbedding.getArray("embedding");
+          
+          // Calculate result limit based on available memory
+          int resultLimit = availableMemoryMB < 200 ? 20 : 50;
+          if (options != null && options.hasKey("limit")) {
+            resultLimit = Math.min(resultLimit, options.getInt("limit"));
+          }
+          
+          // Create priority queue for top results
+          java.util.PriorityQueue<Map.Entry<Integer, Double>> topResults = 
+              new java.util.PriorityQueue<>(resultLimit, 
+                  (a, b) -> Double.compare(a.getValue(), b.getValue())); // Min heap
+          
+          // Process embeddings in batches to reduce memory pressure
+          int batchSize = Math.min(100, count);
+          float[] queryVector = new float[dimension];
+          
+          // Convert query embedding to float array
+          for (int i = 0; i < dimension; i++) {
+              queryVector[i] = (float)queryEmbeddingArray.getDouble(i);
+          }
+          
+          // Process each embedding
+          for (int i = 0; i < count; i++) {
+              float[] embVector = new float[dimension];
+              
+              // Read the embedding values
+              for (int j = 0; j < dimension; j++) {
+                  if (isQuantized) {
+                      // Read quantized byte and convert to float
+                      byte quantized = buffer.get(headerSize + (i * embeddingSize) + j);
+                      embVector[j] = quantized / 127.0f;
+                  } else {
+                      // Read float directly
+                      embVector[j] = buffer.getFloat(headerSize + (i * embeddingSize) + (j * 4));
+                  }
+              }
+              
+              // Calculate cosine similarity
+              double similarity = calculateCosineSimilarity(queryVector, embVector);
+              
+              // Add to priority queue if it's in the top results
+              if (topResults.size() < resultLimit) {
+                  topResults.add(new java.util.AbstractMap.SimpleEntry<>(i, similarity));
+              } else if (similarity > topResults.peek().getValue()) {
+                  topResults.poll();
+                  topResults.add(new java.util.AbstractMap.SimpleEntry<>(i, similarity));
+              }
+          }
+          
+          // Convert priority queue to sorted array
+          java.util.List<Map.Entry<Integer, Double>> sortedResults = 
+              new java.util.ArrayList<>(topResults);
+          java.util.Collections.sort(sortedResults, 
+              (a, b) -> Double.compare(b.getValue(), a.getValue())); // Descending
+          
+          // Create results array
+          WritableArray searchResults = Arguments.createArray();
+          
+          // Add top results to output
+          for (Map.Entry<Integer, Double> entry : sortedResults) {
+              int index = entry.getKey();
+              double similarity = entry.getValue();
+              
+              WritableMap searchResult = Arguments.createMap();
+              searchResult.putInt("index", index);
+              searchResult.putDouble("score", similarity);
+              
+              searchResults.pushMap(searchResult);
+          }
+          
+          // Close the file
+          fileChannel.close();
+          memoryMappedFile.close();
+          
+          // Add results to output
+          result.putArray("results", searchResults);
+          result.putInt("totalSearched", count);
+          result.putInt("dimension", dimension);
+          result.putBoolean("isQuantized", isQuantized);
+          
+          // Add device status
+          result.putInt("batteryLevel", batteryLevel);
+          result.putBoolean("isCharging", isCharging);
+          result.putDouble("thermalHeadroom", thermalHeadroom);
+          result.putDouble("availableMemoryMB", availableMemoryMB);
+          
+          return result;
+        } catch (Exception e) {
+          exception = e;
+          return null;
+        }
+      }
+      
+      // Helper method to calculate cosine similarity between float arrays
+      private double calculateCosineSimilarity(float[] a, float[] b) {
+          double dotProduct = 0.0;
+          double normA = 0.0;
+          double normB = 0.0;
+          
+          int length = Math.min(a.length, b.length);
+          
+          for (int i = 0; i < length; i++) {
+              dotProduct += a[i] * b[i];
+              normA += a[i] * a[i];
+              normB += b[i] * b[i];
+          }
+          
+          if (normA == 0 || normB == 0) {
+              return 0;
+          }
+          
+          return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+      }
+      
+      // Helper method to determine adaptive embedding dimension
+      private int getAdaptiveEmbeddingDimension(
+          int batteryLevel, 
+          boolean isCharging, 
+          float thermalHeadroom, 
+          double availableMemoryMB,
+          boolean isHighPriority) {
+          
+          // High priority embeddings get more dimensions
+          if (isHighPriority) {
+              // Still apply some reduction for critical conditions
+              if (batteryLevel < 10 && !isCharging) {
+                  return 384;
+              }
+              
+              // For high priority, use full dimensions when possible
+              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
+                  return 1536; // Full dimension for most models
+              }
+              
+              // Moderate reduction for high priority under constraints
+              return 768;
+          }
+          
+          // Full dimension when charging with high battery and good thermal
+          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
+              return 1536;
+          }
+          
+          // Critical resource constraints - use minimum dimension
+          if ((batteryLevel < 15 && !isCharging) || 
+              thermalHeadroom < 0.15f || 
+              availableMemoryMB < 100) {
+              return 128;
+          }
+          
+          // Low battery - reduce dimension significantly
+          if (batteryLevel < 30 && !isCharging) {
+              return 256;
+          }
+          
+          // Medium battery - reduce dimension moderately
+          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
+              return 384;
+          }
+          
+          // Memory constraints - adjust based on available memory
+          if (availableMemoryMB < 200) {
+              return 512;
+          }
+          
+          // Default - use 768 for good balance
+          return 768;
+      }
+      
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "mmap-vector-search-" + contextId);
   }
   
   /**
@@ -1813,16 +2242,86 @@ public class RNLlama implements LifecycleEventListener {
           
           int dimension = options != null && options.hasKey("dimension") ? 
               options.getInt("dimension") : 768;
+              
+          // Create directory if it doesn't exist
+          File directory = new File(filePath).getParentFile();
+          if (directory != null && !directory.exists()) {
+              directory.mkdirs();
+          }
           
-          // This would call into C++ to store embeddings in memory-mapped file
-          // For now, we'll simulate the results
+          // Prepare header information
+          int headerSize = 32; // bytes for metadata
+          int embeddingSize = dimension * (useQuantization ? 1 : 4); // bytes per embedding
+          long totalSize = headerSize + (long)capacity * embeddingSize;
           
-          result.putInt("storedCount", embeddings.size());
+          // Create or open the memory-mapped file
+          RandomAccessFile memoryMappedFile = new RandomAccessFile(filePath, "rw");
+          
+          // Set the file size if it's new
+          if (memoryMappedFile.length() < totalSize) {
+              memoryMappedFile.setLength(totalSize);
+          }
+          
+          // Create the memory map
+          java.nio.channels.FileChannel fileChannel = memoryMappedFile.getChannel();
+          java.nio.MappedByteBuffer buffer = fileChannel.map(
+              java.nio.channels.FileChannel.MapMode.READ_WRITE, 0, totalSize);
+          
+          // Write header information
+          buffer.putInt(0xEMBED01); // Magic number for embedding file format
+          buffer.putInt(embeddings.size()); // Number of embeddings
+          buffer.putInt(capacity); // Maximum capacity
+          buffer.putInt(dimension); // Embedding dimension
+          buffer.putInt(useQuantization ? 1 : 0); // Quantization flag
+          buffer.putLong(System.currentTimeMillis()); // Creation timestamp
+          buffer.putInt(0); // Reserved for future use
+          buffer.putInt(0); // Reserved for future use
+          
+          // Write each embedding
+          int storedCount = 0;
+          for (int i = 0; i < embeddings.size() && i < capacity; i++) {
+              ReadableMap embedding = embeddings.getMap(i);
+              if (!embedding.hasKey("embedding")) {
+                  continue;
+              }
+              
+              ReadableArray embeddingArray = embedding.getArray("embedding");
+              if (embeddingArray.size() != dimension) {
+                  // Skip if dimensions don't match
+                  continue;
+              }
+              
+              // Store the embedding
+              for (int j = 0; j < dimension; j++) {
+                  if (useQuantization) {
+                      // Convert float to quantized byte
+                      float value = (float)embeddingArray.getDouble(j);
+                      byte quantized = (byte)Math.round(value * 127.0f);
+                      buffer.put(headerSize + (i * embeddingSize) + j, quantized);
+                  } else {
+                      // Store as float
+                      float value = (float)embeddingArray.getDouble(j);
+                      buffer.putFloat(headerSize + (i * embeddingSize) + (j * 4), value);
+                  }
+              }
+              
+              storedCount++;
+          }
+          
+          // Force write to disk
+          buffer.force();
+          
+          // Close the file
+          fileChannel.close();
+          memoryMappedFile.close();
+          
+          // Return results
+          result.putInt("storedCount", storedCount);
           result.putString("filePath", filePath);
           result.putBoolean("useQuantization", useQuantization);
           result.putInt("capacity", capacity);
           result.putInt("dimension", dimension);
-          result.putDouble("storageSizeBytes", embeddings.size() * dimension * (useQuantization ? 1 : 4));
+          result.putDouble("storageSizeBytes", totalSize);
           
           return result;
         } catch (Exception e) {
@@ -1857,13 +2356,77 @@ public class RNLlama implements LifecycleEventListener {
         try {
           WritableMap result = Arguments.createMap();
           
-          // This would call into C++ to load embeddings from memory-mapped file
-          // For now, we'll simulate the results
+          // Check if file exists
+          File file = new File(filePath);
+          if (!file.exists()) {
+              throw new Exception("Embedding file does not exist: " + filePath);
+          }
           
-          result.putInt("loadedCount", 100);
+          // Open the memory-mapped file
+          RandomAccessFile memoryMappedFile = new RandomAccessFile(filePath, "r");
+          java.nio.channels.FileChannel fileChannel = memoryMappedFile.getChannel();
+          
+          // Map the file into memory (read-only)
+          java.nio.MappedByteBuffer buffer = fileChannel.map(
+              java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, memoryMappedFile.length());
+          
+          // Read header information
+          int magicNumber = buffer.getInt();
+          if (magicNumber != 0xEMBED01) {
+              throw new Exception("Invalid embedding file format");
+          }
+          
+          int count = buffer.getInt();
+          int capacity = buffer.getInt();
+          int dimension = buffer.getInt();
+          boolean isQuantized = buffer.getInt() == 1;
+          long timestamp = buffer.getLong();
+          
+          // Skip reserved fields
+          buffer.getInt();
+          buffer.getInt();
+          
+          // Calculate embedding size
+          int embeddingSize = dimension * (isQuantized ? 1 : 4);
+          int headerSize = 32;
+          
+          // Create array to hold embeddings
+          WritableArray embeddings = Arguments.createArray();
+          
+          // Read each embedding
+          for (int i = 0; i < count; i++) {
+              WritableMap embedding = Arguments.createMap();
+              WritableArray embeddingArray = Arguments.createArray();
+              
+              // Read the embedding values
+              for (int j = 0; j < dimension; j++) {
+                  float value;
+                  if (isQuantized) {
+                      // Read quantized byte and convert to float
+                      byte quantized = buffer.get(headerSize + (i * embeddingSize) + j);
+                      value = quantized / 127.0f;
+                  } else {
+                      // Read float directly
+                      value = buffer.getFloat(headerSize + (i * embeddingSize) + (j * 4));
+                  }
+                  embeddingArray.pushDouble(value);
+              }
+              
+              embedding.putArray("embedding", embeddingArray);
+              embeddings.pushMap(embedding);
+          }
+          
+          // Close the file
+          fileChannel.close();
+          memoryMappedFile.close();
+          
+          // Return results
+          result.putInt("loadedCount", count);
           result.putString("filePath", filePath);
-          result.putBoolean("isQuantized", true);
-          result.putInt("dimension", 768);
+          result.putBoolean("isQuantized", isQuantized);
+          result.putInt("dimension", dimension);
+          result.putArray("embeddings", embeddings);
+          result.putDouble("timestamp", timestamp);
           
           return result;
         } catch (Exception e) {
