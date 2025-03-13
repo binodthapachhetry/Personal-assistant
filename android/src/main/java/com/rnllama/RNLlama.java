@@ -25,6 +25,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.PushbackInputStream;
 
+import java.util.Iterator;
+import java.util.Map;
+import com.facebook.react.bridge.WritableArray;
+
 public class RNLlama implements LifecycleEventListener {
   public static final String NAME = "RNLlama";
 
@@ -459,7 +463,7 @@ public class RNLlama implements LifecycleEventListener {
     boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
                          status == BatteryManager.BATTERY_STATUS_FULL;
     
-    float thermalHeadroom = 1.0f;
+    double thermalHeadroom = 1.0d;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       try {
         android.os.PowerManager powerManager = (android.os.PowerManager) 
@@ -483,7 +487,7 @@ public class RNLlama implements LifecycleEventListener {
         WritableMap result = Arguments.createMap();
         result.putBoolean("deferred", true);
         result.putInt("batteryLevel", batteryLevel);
-        result.putFloat("thermalHeadroom", thermalHeadroom);
+        result.putDouble("thermalHeadroom", thermalHeadroom);
         result.putDouble("availableMemoryMB", availableMemoryMB);
         promise.resolve(result);
         return;
@@ -550,7 +554,10 @@ public class RNLlama implements LifecycleEventListener {
             
             // Create a new params object with the resource parameters
             WritableMap newParams = Arguments.createMap();
-            for (Iterator<Map.Entry<String, Object>> it = params.getEntryMap().entrySet().iterator(); it.hasNext();) {
+            // for (Iterator<Map.Entry<String, Object>> it = params.getEntryMap().entrySet().iterator(); it.hasNext();) {
+            for (Iterator<String> it = params.getKeySet().iterator(); it.hasNext();) {
+              String key = it.next();
+              ReadableMapEntry entry = params.getEntry(key);  // Get key/value pair
               Map.Entry<String, Object> entry = it.next();
               newParams.putString(entry.getKey(), entry.getValue().toString());
             }
