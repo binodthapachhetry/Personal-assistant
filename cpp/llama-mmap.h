@@ -66,3 +66,14 @@ private:
 };
 
 size_t llama_path_max();
+
+// Helper functions for llama-sampling.cpp
+inline llama_mmap llama_mmap_create(const char* filename, size_t size) {
+    llama_file file(filename, "wb+");
+    return llama_mmap(&file, size);
+}
+
+inline void llama_mmap_close(llama_mmap* mapping) {
+    // This is a no-op since the destructor will handle cleanup
+    // But we provide it for API compatibility
+}

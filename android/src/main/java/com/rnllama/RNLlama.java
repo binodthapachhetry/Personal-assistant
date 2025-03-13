@@ -529,7 +529,8 @@ public class RNLlama implements LifecycleEventListener {
       try {
         android.os.PowerManager powerManager = (android.os.PowerManager) 
             reactContext.getSystemService(Context.POWER_SERVICE);
-        thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+        double updatedThermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+        thermalHeadroom = updatedThermalHeadroom;
       } catch (Exception e) {
         Log.e(NAME, "Failed to check thermal status", e);
       }
@@ -1062,7 +1063,8 @@ public class RNLlama implements LifecycleEventListener {
           try {
             android.os.PowerManager powerManager = (android.os.PowerManager) 
                 reactContext.getSystemService(Context.POWER_SERVICE);
-            thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+            double updatedThermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+            thermalHeadroom = updatedThermalHeadroom;
           } catch (Exception e) {
             // Default to 0.5 if we can't get the thermal headroom
             thermalHeadroom = 0.5d;
@@ -1171,7 +1173,8 @@ public class RNLlama implements LifecycleEventListener {
             try {
               android.os.PowerManager powerManager = (android.os.PowerManager) 
                   reactContext.getSystemService(Context.POWER_SERVICE);
-              thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+              double updatedThermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+              thermalHeadroom = updatedThermalHeadroom;
             } catch (Exception e) {
               thermalHeadroom = 0.5d;
             }
@@ -1819,7 +1822,8 @@ public class RNLlama implements LifecycleEventListener {
           try {
             android.os.PowerManager powerManager = (android.os.PowerManager) 
                 reactContext.getSystemService(Context.POWER_SERVICE);
-            thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+            double updatedThermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+            thermalHeadroom = updatedThermalHeadroom;
           } catch (Exception e) {
             // Default to 0.5 if we can't get the thermal headroom
             thermalHeadroom = 0.5d;
@@ -1902,7 +1906,8 @@ public class RNLlama implements LifecycleEventListener {
             try {
               android.os.PowerManager powerManager = (android.os.PowerManager) 
                   reactContext.getSystemService(Context.POWER_SERVICE);
-              thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+              double updatedThermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+              thermalHeadroom = updatedThermalHeadroom;
             } catch (Exception e) {
               thermalHeadroom = 0.5d;
             }
