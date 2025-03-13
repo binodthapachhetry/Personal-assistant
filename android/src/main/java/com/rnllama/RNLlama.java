@@ -1471,54 +1471,6 @@ public class RNLlama implements LifecycleEventListener {
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
       }
       
-      // Helper method to determine adaptive embedding dimension - class version
-          
-          // High priority embeddings get more dimensions
-          if (isHighPriority) {
-              // Still apply some reduction for critical conditions
-              if (batteryLevel < 10 && !isCharging) {
-                  return 384;
-              }
-              
-              // For high priority, use full dimensions when possible
-              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
-                  return 1536; // Full dimension for most models
-              }
-              
-              // Moderate reduction for high priority under constraints
-              return 768;
-          }
-          
-          // Full dimension when charging with high battery and good thermal
-          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
-              return 1536;
-          }
-          
-          // Critical resource constraints - use minimum dimension
-          if ((batteryLevel < 15 && !isCharging) || 
-              thermalHeadroom < 0.15f || 
-              availableMemoryMB < 100) {
-              return 128;
-          }
-          
-          // Low battery - reduce dimension significantly
-          if (batteryLevel < 30 && !isCharging) {
-              return 256;
-          }
-          
-          // Medium battery - reduce dimension moderately
-          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
-              return 384;
-          }
-          
-          // Memory constraints - adjust based on available memory
-          if (availableMemoryMB < 200) {
-              return 512;
-          }
-          
-          // Default - use 768 for good balance
-          return 768;
-      }
 
       @Override
       protected void onPostExecute(WritableMap result) {
