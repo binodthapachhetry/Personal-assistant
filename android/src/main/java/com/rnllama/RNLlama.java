@@ -1845,7 +1845,7 @@ public class RNLlama implements LifecycleEventListener {
           
           // Read header information
           int magicNumber = buffer.getInt();
-          if (magicNumber != 0xEMBED01) {
+          if (magicNumber != 0xE1B5D01) { // Magic number for embedding file format
               throw new Exception("Invalid embedding file format");
           }
           
@@ -2268,7 +2268,7 @@ public class RNLlama implements LifecycleEventListener {
               java.nio.channels.FileChannel.MapMode.READ_WRITE, 0, totalSize);
           
           // Write header information
-          buffer.putInt(0xEMBED01); // Magic number for embedding file format
+          buffer.putInt(0xE1B5D01); // Magic number for embedding file format
           buffer.putInt(embeddings.size()); // Number of embeddings
           buffer.putInt(capacity); // Maximum capacity
           buffer.putInt(dimension); // Embedding dimension
@@ -2372,7 +2372,7 @@ public class RNLlama implements LifecycleEventListener {
           
           // Read header information
           int magicNumber = buffer.getInt();
-          if (magicNumber != 0xEMBED01) {
+          if (magicNumber != 0xE1B5D01) { // Magic number for embedding file format
               throw new Exception("Invalid embedding file format");
           }
           
