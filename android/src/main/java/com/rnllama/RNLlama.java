@@ -470,6 +470,13 @@ public class RNLlama implements LifecycleEventListener {
       }
     }
     
+    // Get memory info
+    android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+    android.app.ActivityManager activityManager = 
+        (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+    activityManager.getMemoryInfo(memoryInfo);
+    double availableMemoryMB = memoryInfo.availMem / (1024.0 * 1024.0);
+    
     // Check if we should defer embedding generation based on battery status
     if (params.hasKey("deferOnLowBattery") && params.getBoolean("deferOnLowBattery")) {
       if (batteryLevel < 20 && !isCharging) {
@@ -477,10 +484,20 @@ public class RNLlama implements LifecycleEventListener {
         result.putBoolean("deferred", true);
         result.putInt("batteryLevel", batteryLevel);
         result.putFloat("thermalHeadroom", thermalHeadroom);
+        result.putDouble("availableMemoryMB", availableMemoryMB);
         promise.resolve(result);
         return;
       }
     }
+    
+    // Determine if this is a high-priority embedding
+    boolean isHighPriority = params.hasKey("highPriority") && params.getBoolean("highPriority");
+    
+    // Determine if we should create a shadow vector (lower quality backup)
+    boolean createShadowVector = params.hasKey("createShadowVector") && params.getBoolean("createShadowVector");
+    
+    // Get target dimension if specified
+    int targetDimension = params.hasKey("targetDimension") ? params.getInt("targetDimension") : -1;
     
     AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
       private Exception exception;
@@ -501,7 +518,7 @@ public class RNLlama implements LifecycleEventListener {
             boolean isCurrentlyCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
                                           status == BatteryManager.BATTERY_STATUS_FULL;
                                           
-            if (currentBatteryLevel < 10 && !isCurrentlyCharging) {
+            if (currentBatteryLevel < 10 && !isCurrentlyCharging && !isHighPriority) {
               WritableMap result = Arguments.createMap();
               result.putBoolean("skipped", true);
               result.putInt("batteryLevel", currentBatteryLevel);
@@ -514,22 +531,52 @@ public class RNLlama implements LifecycleEventListener {
             throw new Exception("Context not found");
           }
           
-          WritableMap embedding = context.getEmbedding(text, params);
+          // Add resource parameters to embedding request
+          ReadableMap embeddingParams = params;
+          if (!params.hasKey("resourceParams")) {
+            WritableMap resourceParams = Arguments.createMap();
+            resourceParams.putInt("batteryLevel", batteryLevel);
+            resourceParams.putBoolean("isCharging", isCharging);
+            resourceParams.putDouble("thermalHeadroom", thermalHeadroom);
+            resourceParams.putDouble("availableMemoryMB", availableMemoryMB);
+            resourceParams.putInt("targetDimension", targetDimension);
+            resourceParams.putBoolean("createShadowVector", createShadowVector);
+            
+            // Create a new params object with the resource parameters
+            WritableMap newParams = Arguments.createMap();
+            for (Iterator<Map.Entry<String, Object>> it = params.getEntryMap().entrySet().iterator(); it.hasNext();) {
+              Map.Entry<String, Object> entry = it.next();
+              newParams.putString(entry.getKey(), entry.getValue().toString());
+            }
+            newParams.putMap("resourceParams", resourceParams);
+            embeddingParams = newParams;
+          }
+          
+          WritableMap embedding = context.getEmbedding(text, embeddingParams);
           
           // Add device resource metadata
           if (params.hasKey("includeResourceMeta") && params.getBoolean("includeResourceMeta")) {
             embedding.putInt("batteryLevel", batteryLevel);
             embedding.putBoolean("isCharging", isCharging);
             embedding.putFloat("thermalHeadroom", thermalHeadroom);
-            
-            // Add memory info
-            android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
-            android.app.ActivityManager activityManager = 
-                (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
-            activityManager.getMemoryInfo(memoryInfo);
-            
-            embedding.putDouble("availableMemoryMB", memoryInfo.availMem / (1024.0 * 1024.0));
+            embedding.putDouble("availableMemoryMB", availableMemoryMB);
             embedding.putBoolean("lowMemory", memoryInfo.lowMemory);
+            
+            // Add timestamp for expiration tracking
+            embedding.putDouble("timestamp", System.currentTimeMillis());
+            
+            // Add shadow vector status
+            if (embedding.hasKey("isShadowVector")) {
+              embedding.putBoolean("isShadowVector", embedding.getBoolean("isShadowVector"));
+            } else {
+              embedding.putBoolean("isShadowVector", false);
+            }
+            
+            // Add dimension information
+            if (embedding.hasKey("originalDimension") && embedding.hasKey("storedDimension")) {
+              embedding.putInt("dimensionReduction", 
+                  embedding.getInt("originalDimension") - embedding.getInt("storedDimension"));
+            }
           } else if (params.hasKey("includeBatteryMeta") && params.getBoolean("includeBatteryMeta")) {
             // For backward compatibility
             embedding.putInt("batteryLevel", batteryLevel);
