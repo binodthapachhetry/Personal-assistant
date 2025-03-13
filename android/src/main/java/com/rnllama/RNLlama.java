@@ -97,6 +97,63 @@ public class RNLlama implements LifecycleEventListener {
     return (int)(level * 100 / (float)scale);
   }
 
+  /**                                                                                                                                   
+    * Determine optimal embedding dimension based on device resources                                                                    
+    */                                                                                                                                   
+   private int getAdaptiveEmbeddingDimension(                                                                                            
+       int batteryLevel,                                                                                                                 
+       boolean isCharging,                                                                                                               
+       double thermalHeadroom,                                                                                                           
+       double availableMemoryMB,                                                                                                         
+       boolean isHighPriority) {                                                                                                         
+                                                                                                                                         
+     // High priority embeddings get more dimensions                                                                                     
+     if (isHighPriority) {                                                                                                               
+       // Still apply some reduction for critical conditions                                                                             
+       if (batteryLevel < 10 && !isCharging) {                                                                                           
+         return 384;                                                                                                                     
+       }                                                                                                                                 
+                                                                                                                                         
+       // Full dimensions when possible                                                                                                  
+       if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4) {                                                                   
+         return 1536; // Full dimension for most models                                                                                  
+       }                                                                                                                                 
+                                                                                                                                         
+       // Moderate reduction for high priority under constraints                                                                         
+       return 768;                                                                                                                       
+     }                                                                                                                                   
+                                                                                                                                         
+     // Full dimension when charging with high battery and good thermal                                                                  
+     if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5) {                                                                     
+       return 1536;                                                                                                                      
+     }                                                                                                                                   
+                                                                                                                                         
+     // Critical resource constraints - use minimum dimension                                                                            
+     if ((batteryLevel < 15 && !isCharging) ||                                                                                           
+         thermalHeadroom < 0.15 ||                                                                                                       
+         availableMemoryMB < 100) {                                                                                                      
+       return 128;                                                                                                                       
+     }                                                                                                                                   
+                                                                                                                                         
+     // Low battery - reduce dimension significantly                                                                                     
+     if (batteryLevel < 30 && !isCharging) {                                                                                             
+       return 256;                                                                                                                       
+     }                                                                                                                                   
+                                                                                                                                         
+     // Medium battery - reduce dimension moderately                                                                                     
+     if (batteryLevel < 50 || thermalHeadroom < 0.3) {                                                                                   
+       return 384;                                                                                                                       
+     }                                                                                                                                   
+                                                                                                                                         
+     // Memory constraints - adjust based on available memory                                                                            
+     if (availableMemoryMB < 200) {                                                                                                      
+       return 512;                                                                                                                       
+     }                                                                                                                                   
+                                                                                                                                         
+     // Default - use 768 for good balance                                                                                               
+     return 768;                                                                                                                         
+   }     
+
   private HashMap<Integer, LlamaContext> contexts = new HashMap<>();
 
   public void toggleNativeLog(boolean enabled, Promise promise) {
@@ -467,6 +524,7 @@ public class RNLlama implements LifecycleEventListener {
                          status == BatteryManager.BATTERY_STATUS_FULL;
     
     double thermalHeadroom = 1.0d;
+
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       try {
         android.os.PowerManager powerManager = (android.os.PowerManager) 
@@ -476,6 +534,9 @@ public class RNLlama implements LifecycleEventListener {
         Log.e(NAME, "Failed to check thermal status", e);
       }
     }
+
+    // Create a final variable to capture the current value                                                                                 
+    final double finalThermalHeadroom = thermalHeadroom;
     
     // Get memory info
     android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
@@ -509,7 +570,7 @@ public class RNLlama implements LifecycleEventListener {
     // Calculate adaptive target dimension based on device resources
     int targetDimension = params.hasKey("targetDimension") ? 
         params.getInt("targetDimension") : 
-        getAdaptiveEmbeddingDimension(batteryLevel, isCharging, thermalHeadroom, availableMemoryMB, isHighPriority);
+        this.getAdaptiveEmbeddingDimension(batteryLevel, isCharging, thermalHeadroom, availableMemoryMB, isHighPriority);
     
     AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
       private Exception exception;
@@ -549,7 +610,7 @@ public class RNLlama implements LifecycleEventListener {
             WritableMap resourceParams = Arguments.createMap();
             resourceParams.putInt("batteryLevel", batteryLevel);
             resourceParams.putBoolean("isCharging", isCharging);
-            resourceParams.putDouble("thermalHeadroom", thermalHeadroom);
+            resourceParams.putDouble("thermalHeadroom", finalThermalHeadroom);
             resourceParams.putDouble("availableMemoryMB", availableMemoryMB);
             resourceParams.putInt("targetDimension", targetDimension);
             resourceParams.putBoolean("createShadowVector", createShadowVector);
@@ -592,7 +653,7 @@ public class RNLlama implements LifecycleEventListener {
           if (params.hasKey("includeResourceMeta") && params.getBoolean("includeResourceMeta")) {
             embedding.putInt("batteryLevel", batteryLevel);
             embedding.putBoolean("isCharging", isCharging);
-            embedding.putDouble("thermalHeadroom", thermalHeadroom);
+            embedding.putDouble("thermalHeadroom", finalThermalHeadroom);
             embedding.putDouble("availableMemoryMB", availableMemoryMB);
             embedding.putBoolean("lowMemory", memoryInfo.lowMemory);
             
@@ -631,60 +692,60 @@ public class RNLlama implements LifecycleEventListener {
         return null;
       }
       
-  // Helper method to determine adaptive embedding dimension
-  private int getAdaptiveEmbeddingDimension(
-          int batteryLevel, 
-          boolean isCharging, 
-          float thermalHeadroom, 
-          double availableMemoryMB,
-          boolean isHighPriority) {
+  // // Helper method to determine adaptive embedding dimension
+  // private int getAdaptiveEmbeddingDimension(
+  //         int batteryLevel, 
+  //         boolean isCharging, 
+  //         float thermalHeadroom, 
+  //         double availableMemoryMB,
+  //         boolean isHighPriority) {
           
-          // High priority embeddings get more dimensions
-          if (isHighPriority) {
-              // Still apply some reduction for critical conditions
-              if (batteryLevel < 10 && !isCharging) {
-                  return 384;
-              }
+  //         // High priority embeddings get more dimensions
+  //         if (isHighPriority) {
+  //             // Still apply some reduction for critical conditions
+  //             if (batteryLevel < 10 && !isCharging) {
+  //                 return 384;
+  //             }
               
-              // For high priority, use full dimensions when possible
-              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
-                  return 1536; // Full dimension for most models
-              }
+  //             // For high priority, use full dimensions when possible
+  //             if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
+  //                 return 1536; // Full dimension for most models
+  //             }
               
-              // Moderate reduction for high priority under constraints
-              return 768;
-          }
+  //             // Moderate reduction for high priority under constraints
+  //             return 768;
+  //         }
           
-          // Full dimension when charging with high battery and good thermal
-          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
-              return 1536;
-          }
+  //         // Full dimension when charging with high battery and good thermal
+  //         if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
+  //             return 1536;
+  //         }
           
-          // Critical resource constraints - use minimum dimension
-          if ((batteryLevel < 15 && !isCharging) || 
-              thermalHeadroom < 0.15f || 
-              availableMemoryMB < 100) {
-              return 128;
-          }
+  //         // Critical resource constraints - use minimum dimension
+  //         if ((batteryLevel < 15 && !isCharging) || 
+  //             thermalHeadroom < 0.15f || 
+  //             availableMemoryMB < 100) {
+  //             return 128;
+  //         }
           
-          // Low battery - reduce dimension significantly
-          if (batteryLevel < 30 && !isCharging) {
-              return 256;
-          }
+  //         // Low battery - reduce dimension significantly
+  //         if (batteryLevel < 30 && !isCharging) {
+  //             return 256;
+  //         }
           
-          // Medium battery - reduce dimension moderately
-          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
-              return 384;
-          }
+  //         // Medium battery - reduce dimension moderately
+  //         if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
+  //             return 384;
+  //         }
           
-          // Memory constraints - adjust based on available memory
-          if (availableMemoryMB < 200) {
-              return 512;
-          }
+  //         // Memory constraints - adjust based on available memory
+  //         if (availableMemoryMB < 200) {
+  //             return 512;
+  //         }
           
-          // Default - use 768 for good balance
-          return 768;
-      }
+  //         // Default - use 768 for good balance
+  //         return 768;
+  //     }
 
       @Override
       protected void onPostExecute(WritableMap result) {
@@ -995,7 +1056,8 @@ public class RNLlama implements LifecycleEventListener {
                              status == BatteryManager.BATTERY_STATUS_FULL;
         
         // Get thermal status
-        float thermalHeadroom = 1.0f;
+        double thermalHeadroom = 1.0d;
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
           try {
             android.os.PowerManager powerManager = (android.os.PowerManager) 
@@ -1003,9 +1065,11 @@ public class RNLlama implements LifecycleEventListener {
             thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
           } catch (Exception e) {
             // Default to 0.5 if we can't get the thermal headroom
-            thermalHeadroom = 0.5f;
+            thermalHeadroom = 0.5d;
           }
         }
+
+        final double finalThermalHeadroom = thermalHeadroom;
         
         // Get memory status
         android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
@@ -1035,7 +1099,7 @@ public class RNLlama implements LifecycleEventListener {
           reason = "Battery low (" + batteryLevel + "%), not a high-priority query";
         }
         // Skip if device is thermally throttled
-        else if (thermalHeadroom < 0.2f) {
+        else if (thermalHeadroom < 0.2d) {
           shouldUse = false;
           reason = "Device is thermally throttled (headroom: " + thermalHeadroom + ")";
         }
@@ -1101,14 +1165,15 @@ public class RNLlama implements LifecycleEventListener {
                                status == BatteryManager.BATTERY_STATUS_FULL;
           
           // Get thermal status
-          float thermalHeadroom = 1.0f;
+          double thermalHeadroom = 1.0d;
+
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
               android.os.PowerManager powerManager = (android.os.PowerManager) 
                   reactContext.getSystemService(Context.POWER_SERVICE);
               thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
             } catch (Exception e) {
-              thermalHeadroom = 0.5f;
+              thermalHeadroom = 0.5d;
             }
           }
           
@@ -1220,7 +1285,7 @@ public class RNLlama implements LifecycleEventListener {
           // Determine if we should use vector search
           boolean useVectorSearch = isHighPriority || 
               ((batteryLevel >= 15 || isCharging) && 
-               thermalHeadroom >= 0.2f && 
+               thermalHeadroom >= 0.2d && 
                availableMemoryMB >= 100);
           
           result.putBoolean("vectorSearchUsed", useVectorSearch);
@@ -1233,7 +1298,7 @@ public class RNLlama implements LifecycleEventListener {
             ((WritableMap)embParams).putBoolean("highPriority", isHighPriority);
             
             // Set target dimension based on device resources
-            int targetDimension = getAdaptiveEmbeddingDimension(
+            int targetDimension = RNLlama.this.getAdaptiveEmbeddingDimension(
                 batteryLevel, isCharging, thermalHeadroom, availableMemoryMB, isHighPriority);
             ((WritableMap)embParams).putInt("targetDimension", targetDimension);
             
@@ -1447,29 +1512,29 @@ public class RNLlama implements LifecycleEventListener {
   //         return 768;
   //     }
 
-  //     // Helper method to calculate cosine similarity
-  //     private double calculateCosineSimilarity(ReadableArray a, ReadableArray b) {
-  //       double dotProduct = 0.0;
-  //       double normA = 0.0;
-  //       double normB = 0.0;
+      // Helper method to calculate cosine similarity
+      private double calculateCosineSimilarity(ReadableArray a, ReadableArray b) {
+        double dotProduct = 0.0;
+        double normA = 0.0;
+        double normB = 0.0;
         
-  //       int length = Math.min(a.size(), b.size());
+        int length = Math.min(a.size(), b.size());
         
-  //       for (int i = 0; i < length; i++) {
-  //         double valA = a.getDouble(i);
-  //         double valB = b.getDouble(i);
+        for (int i = 0; i < length; i++) {
+          double valA = a.getDouble(i);
+          double valB = b.getDouble(i);
           
-  //         dotProduct += valA * valB;
-  //         normA += valA * valA;
-  //         normB += valB * valB;
-  //       }
+          dotProduct += valA * valB;
+          normA += valA * valA;
+          normB += valB * valB;
+        }
         
-  //       if (normA == 0 || normB == 0) {
-  //         return 0;
-  //       }
+        if (normA == 0 || normB == 0) {
+          return 0;
+        }
         
-  //       return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-  //     }
+        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+      }
       
 
       @Override
@@ -1748,7 +1813,8 @@ public class RNLlama implements LifecycleEventListener {
                              status == BatteryManager.BATTERY_STATUS_FULL;
         
         // Get thermal status
-        float thermalHeadroom = 1.0f;
+        double thermalHeadroom = 1.0d;
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
           try {
             android.os.PowerManager powerManager = (android.os.PowerManager) 
@@ -1756,7 +1822,7 @@ public class RNLlama implements LifecycleEventListener {
             thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
           } catch (Exception e) {
             // Default to 0.5 if we can't get the thermal headroom
-            thermalHeadroom = 0.5f;
+            thermalHeadroom = 0.5d;
           }
         }
         
@@ -1767,7 +1833,7 @@ public class RNLlama implements LifecycleEventListener {
         if (batteryLevel < 20 && !isCharging) {
           shouldDefer = true;
           reason = "Low battery (" + batteryLevel + "%) and not charging";
-        } else if (thermalHeadroom < 0.15f) {
+        } else if (thermalHeadroom < 0.15d) {
           shouldDefer = true;
           reason = "Device is thermally throttled (headroom: " + thermalHeadroom + ")";
         }
@@ -1830,14 +1896,15 @@ public class RNLlama implements LifecycleEventListener {
                                status == BatteryManager.BATTERY_STATUS_FULL;
           
           // Get thermal status
-          float thermalHeadroom = 1.0f;
+          double thermalHeadroom = 1.0d;
+
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
               android.os.PowerManager powerManager = (android.os.PowerManager) 
                   reactContext.getSystemService(Context.POWER_SERVICE);
               thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
             } catch (Exception e) {
-              thermalHeadroom = 0.5f;
+              thermalHeadroom = 0.5d;
             }
           }
           
@@ -1898,7 +1965,7 @@ public class RNLlama implements LifecycleEventListener {
           ((WritableMap)embParams).putBoolean("highPriority", isHighPriority);
           
           // Set target dimension based on device resources
-          int targetDimension = getAdaptiveEmbeddingDimension(
+          int targetDimension = RNLlama.this.getAdaptiveEmbeddingDimension(
               batteryLevel, isCharging, thermalHeadroom, availableMemoryMB, isHighPriority);
           ((WritableMap)embParams).putInt("targetDimension", targetDimension);
           
@@ -2118,14 +2185,15 @@ public class RNLlama implements LifecycleEventListener {
                              status == BatteryManager.BATTERY_STATUS_FULL;
         
         // Get thermal status
-        float thermalHeadroom = 1.0f;
+        double thermalHeadroom = 1.0d;
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
           try {
             android.os.PowerManager powerManager = (android.os.PowerManager) 
                 reactContext.getSystemService(Context.POWER_SERVICE);
             thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
           } catch (Exception e) {
-            thermalHeadroom = 0.5f;
+            thermalHeadroom = 0.5d;
           }
         }
         
@@ -2154,7 +2222,7 @@ public class RNLlama implements LifecycleEventListener {
         boolean memoryPressureCleanup = memoryInfo.lowMemory || availableMemoryMB < 100;
         
         // Check if we should perform thermal cleanup
-        boolean thermalCleanup = thermalHeadroom < 0.1f;
+        boolean thermalCleanup = thermalHeadroom < 0.1d;
         
         // Current time
         long currentTime = System.currentTimeMillis();
