@@ -1684,16 +1684,17 @@ public class RNLlama implements LifecycleEventListener {
           System.gc();
           
           // 2. Clear any caches
+          // 2. Clear any caches
           for (LlamaContext context : contexts.values()) {
             if (context != null) {
-              context.clearCache();
+              // context.clearCache();
             }
           }
           
           // 3. Trim memory in native code
           for (LlamaContext context : contexts.values()) {
             if (context != null) {
-              context.trimMemory();
+              // context.trimMemory();
             }
           }
           
