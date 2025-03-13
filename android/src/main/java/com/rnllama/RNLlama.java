@@ -1529,14 +1529,16 @@ public class RNLlama implements LifecycleEventListener {
         promise.resolve(result);
         tasks.remove(this);
       }
-    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    };
+    
+    task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "hybrid-search-" + contextId);
   }
   /**
    * Enable memory-mapped storage for LLM context
    */
   public void enableMmapStorage(String path, ReadableMap options, Promise promise) {
-    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+    AsyncTask<Void, Void, WritableMap> task = new AsyncTask<Void, Void, WritableMap>() {
       private Exception exception;
       
       @Override
