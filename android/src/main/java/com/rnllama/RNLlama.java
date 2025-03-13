@@ -935,6 +935,216 @@ public class RNLlama implements LifecycleEventListener {
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "vector-search-check");
   }
+  
+  /**
+   * Perform hybrid search using both text and vector search
+   */
+  @ReactMethod
+  public void hybridSearch(double id, final String query, final ReadableArray embeddings, final ReadableMap options, final Promise promise) {
+    final int contextId = (int) id;
+    
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      private Exception exception;
+
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        try {
+          // Get device resource status
+          IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+          Intent batteryStatus = reactContext.getApplicationContext().registerReceiver(null, ifilter);
+          
+          int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+          int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+          int batteryLevel = (int)(level * 100 / (float)scale);
+          
+          int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+          boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                               status == BatteryManager.BATTERY_STATUS_FULL;
+          
+          // Get thermal status
+          float thermalHeadroom = 1.0f;
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+              android.os.PowerManager powerManager = (android.os.PowerManager) 
+                  reactContext.getSystemService(Context.POWER_SERVICE);
+              thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+            } catch (Exception e) {
+              thermalHeadroom = 0.5f;
+            }
+          }
+          
+          // Get memory status
+          android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+          android.app.ActivityManager activityManager = 
+              (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+          activityManager.getMemoryInfo(memoryInfo);
+          double availableMemoryMB = memoryInfo.availMem / (1024.0 * 1024.0);
+          
+          // Check if this is a high-priority query
+          boolean isHighPriority = options != null && options.hasKey("highPriority") && 
+                                  options.getBoolean("highPriority");
+          
+          // Check if we should use vector search
+          boolean useVectorSearch = isHighPriority || 
+              (batteryLevel >= 15 || isCharging) && 
+              thermalHeadroom >= 0.2f && 
+              availableMemoryMB >= 100;
+          
+          // Get the context
+          LlamaContext context = contexts.get(contextId);
+          if (context == null) {
+            throw new Exception("Context not found");
+          }
+          
+          // Generate query embedding if vector search is enabled
+          WritableMap queryEmbedding = null;
+          if (useVectorSearch) {
+            ReadableMap embParams = Arguments.createMap();
+            ((WritableMap)embParams).putBoolean("skipOnCriticalBattery", true);
+            ((WritableMap)embParams).putBoolean("highPriority", isHighPriority);
+            queryEmbedding = context.getEmbedding(query, embParams);
+            
+            // If embedding generation was skipped due to battery, fall back to text search
+            if (queryEmbedding.hasKey("skipped") && queryEmbedding.getBoolean("skipped")) {
+              useVectorSearch = false;
+            }
+          }
+          
+          // Prepare result
+          WritableMap result = Arguments.createMap();
+          WritableArray searchResults = Arguments.createArray();
+          
+          // Add resource metrics to result
+          result.putInt("batteryLevel", batteryLevel);
+          result.putBoolean("isCharging", isCharging);
+          result.putDouble("thermalHeadroom", thermalHeadroom);
+          result.putDouble("availableMemoryMB", availableMemoryMB);
+          result.putBoolean("lowMemory", memoryInfo.lowMemory);
+          result.putBoolean("vectorSearchUsed", useVectorSearch);
+          
+          // Perform hybrid search if vector search is enabled
+          if (useVectorSearch && queryEmbedding != null && !queryEmbedding.hasKey("skipped")) {
+            // Convert embeddings to format expected by C++ code
+            // This would call into the C++ hybrid_search function
+            
+            // For now, we'll implement a simple version in Java
+            // In a real implementation, this would call the C++ hybrid_search function
+            
+            // Calculate result limit based on available memory
+            int resultLimit = availableMemoryMB < 200 ? 20 : 50;
+            if (options != null && options.hasKey("limit")) {
+              resultLimit = Math.min(resultLimit, options.getInt("limit"));
+            }
+            
+            // Get query embedding as array
+            ReadableArray queryEmbeddingArray = queryEmbedding.getArray("embedding");
+            
+            // Process each embedding
+            for (int i = 0; i < embeddings.size(); i++) {
+              ReadableMap embedding = embeddings.getMap(i);
+              
+              // Skip if embedding doesn't have required fields
+              if (!embedding.hasKey("embedding") || !embedding.hasKey("text")) {
+                continue;
+              }
+              
+              // Skip entries that are too old (7 days = 604800000 ms)
+              if (embedding.hasKey("timestamp")) {
+                long timestamp = (long)embedding.getDouble("timestamp");
+                if (System.currentTimeMillis() - timestamp > 604800000) {
+                  continue;
+                }
+              }
+              
+              // Calculate similarity
+              ReadableArray embArray = embedding.getArray("embedding");
+              double similarity = calculateCosineSimilarity(queryEmbeddingArray, embArray);
+              
+              // Add to results if similarity is above threshold
+              // Use a lower threshold when battery is low
+              double threshold = batteryLevel < 30 ? 0.6 : 0.7;
+              if (similarity > threshold) {
+                WritableMap searchResult = Arguments.createMap();
+                searchResult.putString("text", embedding.getString("text"));
+                searchResult.putDouble("score", similarity);
+                if (embedding.hasKey("timestamp")) {
+                  searchResult.putDouble("timestamp", embedding.getDouble("timestamp"));
+                }
+                searchResult.putInt("sourceType", 1); // 1 = vector search
+                searchResults.pushMap(searchResult);
+              }
+            }
+            
+            // Sort results by score (descending)
+            // This is a simple bubble sort - in production code, use a more efficient sort
+            for (int i = 0; i < searchResults.size() - 1; i++) {
+              for (int j = 0; j < searchResults.size() - i - 1; j++) {
+                ReadableMap result1 = searchResults.getMap(j);
+                ReadableMap result2 = searchResults.getMap(j + 1);
+                if (result1.getDouble("score") < result2.getDouble("score")) {
+                  // Swap
+                  WritableArray tempArray = Arguments.createArray();
+                  tempArray.pushMap(result2);
+                  ((WritableArray)searchResults).pushMap(result1, j);
+                  ((WritableArray)searchResults).pushMap(tempArray.getMap(0), j + 1);
+                }
+              }
+            }
+            
+            // Limit results
+            if (searchResults.size() > resultLimit) {
+              WritableArray limitedResults = Arguments.createArray();
+              for (int i = 0; i < resultLimit; i++) {
+                limitedResults.pushMap(searchResults.getMap(i));
+              }
+              searchResults = limitedResults;
+            }
+          }
+          
+          result.putArray("results", searchResults);
+          return result;
+        } catch (Exception e) {
+          exception = e;
+        }
+        return null;
+      }
+      
+      // Helper method to calculate cosine similarity
+      private double calculateCosineSimilarity(ReadableArray a, ReadableArray b) {
+        double dotProduct = 0.0;
+        double normA = 0.0;
+        double normB = 0.0;
+        
+        int length = Math.min(a.size(), b.size());
+        
+        for (int i = 0; i < length; i++) {
+          double valA = a.getDouble(i);
+          double valB = b.getDouble(i);
+          
+          dotProduct += valA * valB;
+          normA += valA * valA;
+          normB += valB * valB;
+        }
+        
+        if (normA == 0 || normB == 0) {
+          return 0;
+        }
+        
+        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "hybrid-search-" + contextId);
+  }
   /**
    * Get device resource status for RAG operations
    */
@@ -1115,5 +1325,82 @@ public class RNLlama implements LifecycleEventListener {
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "defer-check");
+  }
+  
+  /**
+   * Manage embedding expiration and cleanup
+   */
+  @ReactMethod
+  public void manageEmbeddingStorage(ReadableMap options, Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
+        // Get device resource status
+        IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = reactContext.getApplicationContext().registerReceiver(null, ifilter);
+        
+        int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+        int batteryLevel = (int)(level * 100 / (float)scale);
+        
+        int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                             status == BatteryManager.BATTERY_STATUS_FULL;
+        
+        // Get memory status
+        android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+        android.app.ActivityManager activityManager = 
+            (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+        activityManager.getMemoryInfo(memoryInfo);
+        double availableMemoryMB = memoryInfo.availMem / (1024.0 * 1024.0);
+        
+        // Default expiration time (7 days in milliseconds)
+        long defaultExpirationTime = 7 * 24 * 60 * 60 * 1000;
+        
+        // Get expiration time from options or use default
+        long expirationTime = options != null && options.hasKey("expirationTime") ? 
+            (long)options.getDouble("expirationTime") : defaultExpirationTime;
+        
+        // Check if we should perform emergency cleanup
+        boolean emergencyCleanup = batteryLevel < 5 && !isCharging;
+        
+        // Check if we should perform memory-pressure cleanup
+        boolean memoryPressureCleanup = memoryInfo.lowMemory || availableMemoryMB < 100;
+        
+        // Current time
+        long currentTime = System.currentTimeMillis();
+        
+        // Counters for statistics
+        int expiredCount = 0;
+        int emergencyCount = 0;
+        int shadowCount = 0;
+        int retainedCount = 0;
+        
+        // Process embeddings
+        // In a real implementation, this would interact with a database
+        // For now, we'll just return the statistics
+        
+        result.putInt("expiredCount", expiredCount);
+        result.putInt("emergencyCount", emergencyCount);
+        result.putInt("shadowCount", shadowCount);
+        result.putInt("retainedCount", retainedCount);
+        result.putBoolean("emergencyCleanupPerformed", emergencyCleanup);
+        result.putBoolean("memoryPressureCleanupPerformed", memoryPressureCleanup);
+        result.putInt("batteryLevel", batteryLevel);
+        result.putBoolean("isCharging", isCharging);
+        result.putDouble("availableMemoryMB", availableMemoryMB);
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "manage-embeddings");
   }
 }

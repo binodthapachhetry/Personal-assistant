@@ -26,6 +26,9 @@ struct embedding_batch {
     int battery_level;
     float scale;
     float min_val;
+    int original_dim;    // Original embedding dimension
+    int stored_dim;      // Dimension after potential reduction
+    bool is_shadow;      // Whether this is a shadow vector (lower quality)
 };
 
 // the ring buffer works similarly to std::deque, but with a fixed capacity
@@ -2515,6 +2518,107 @@ static float calculate_quantization_error(const float* original, const float* re
     return sqrt(sum_squared_error / n);
 }
 
+// Hybrid search implementation
+struct search_result {
+    std::string text;
+    float score;
+    int64_t timestamp;
+    int source_type; // 0=text search, 1=vector search, 2=hybrid
+};
+
+// Compute cosine similarity between two vectors
+static float cosine_similarity(const float* a, const float* b, size_t n) {
+    float dot = 0.0f, norm_a = 0.0f, norm_b = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+    return dot / (sqrt(norm_a) * sqrt(norm_b));
+}
+
+// Hybrid search function that combines text and vector search
+static std::vector<search_result> hybrid_search(
+    const std::string& query,
+    const std::vector<float>& query_embedding,
+    const std::vector<embedding_batch>& embeddings,
+    int battery_level,
+    bool is_charging,
+    float thermal_headroom,
+    size_t available_memory_mb,
+    bool high_priority = false) {
+    
+    std::vector<search_result> results;
+    
+    // Determine if we should use vector search based on device conditions
+    bool use_vectors = high_priority || should_use_vector_search(
+        battery_level, is_charging, thermal_headroom, available_memory_mb);
+    
+    // If we can't use vector search, return empty results
+    // (The caller should fall back to text search)
+    if (!use_vectors || embeddings.empty()) {
+        return results;
+    }
+    
+    // Calculate result limit based on available memory
+    size_t result_limit = available_memory_mb < 200 ? 20 : 50;
+    
+    // Temporary vector for dequantized embeddings
+    std::vector<float> temp_embedding(query_embedding.size());
+    
+    // Calculate similarities and store results
+    for (const auto& batch : embeddings) {
+        // Skip entries that are too old (7 days)
+        int64_t current_time = std::time(nullptr);
+        if (current_time - batch.timestamp > 7 * 24 * 60 * 60) {
+            continue;
+        }
+        
+        // Dequantize if needed
+        const float* emb_ptr;
+        if (!batch.quantized_embedding.empty()) {
+            dequantize_embeddings(
+                batch.quantized_embedding.data(),
+                temp_embedding.data(),
+                temp_embedding.size(),
+                batch.scale,
+                batch.min_val
+            );
+            emb_ptr = temp_embedding.data();
+        } else {
+            emb_ptr = batch.embedding.data();
+        }
+        
+        // Calculate similarity
+        float similarity = cosine_similarity(query_embedding.data(), emb_ptr, query_embedding.size());
+        
+        // Add to results if similarity is above threshold
+        // Use a lower threshold when battery is low
+        float threshold = battery_level < 30 ? 0.6f : 0.7f;
+        if (similarity > threshold) {
+            search_result result;
+            result.text = batch.text;
+            result.score = similarity;
+            result.timestamp = batch.timestamp;
+            result.source_type = 1; // Vector search
+            results.push_back(result);
+        }
+    }
+    
+    // Sort by similarity score (descending)
+    std::sort(results.begin(), results.end(), 
+              [](const search_result& a, const search_result& b) {
+                  return a.score > b.score;
+              });
+    
+    // Limit results
+    if (results.size() > result_limit) {
+        results.resize(result_limit);
+    }
+    
+    return results;
+}
+
 // utils
 
 uint32_t llama_sampler_get_seed(const struct llama_sampler * smpl) {
@@ -2573,6 +2677,61 @@ static bool should_use_vector_search(int battery_level, bool is_charging, float 
     }
     
     return true;
+}
+
+// Determine the optimal embedding dimension based on device resources
+static int get_adaptive_embedding_dimension(
+    int original_dim,
+    int battery_level,
+    bool is_charging,
+    float thermal_headroom,
+    size_t available_memory_mb) {
+    
+    // Full dimension when charging or high battery
+    if (is_charging || battery_level > 80) {
+        return original_dim;
+    }
+    
+    // Severe resource constraints - use minimum dimension
+    if (battery_level < 15 || thermal_headroom < 0.15f || available_memory_mb < 100) {
+        return std::min(128, original_dim);
+    }
+    
+    // Low battery - reduce dimension significantly
+    if (battery_level < 30) {
+        return std::min(256, original_dim);
+    }
+    
+    // Medium battery - reduce dimension moderately
+    if (battery_level < 50) {
+        return std::min(384, original_dim);
+    }
+    
+    // Default - use 512 or original if smaller
+    return std::min(512, original_dim);
+}
+
+// Reduce embedding dimension by truncation or averaging
+static void reduce_embedding_dimension(
+    const std::vector<float>& original,
+    std::vector<float>& reduced,
+    int target_dim) {
+    
+    int original_dim = original.size();
+    
+    // If target dimension is larger than original, just copy
+    if (target_dim >= original_dim) {
+        reduced = original;
+        return;
+    }
+    
+    reduced.resize(target_dim);
+    
+    // Simple truncation for now
+    // TODO: Implement more sophisticated dimension reduction like PCA
+    for (int i = 0; i < target_dim; i++) {
+        reduced[i] = original[i];
+    }
 }
 
 // Determine if embedding generation should be deferred based on device conditions
