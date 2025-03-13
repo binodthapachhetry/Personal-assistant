@@ -17,6 +17,14 @@
 #include <unordered_map>
 #include <stdexcept>
 
+// Embedding batch structure for efficient storage
+struct embedding_batch {
+    std::vector<float> embedding;
+    std::string text;
+    int64_t timestamp;
+    int battery_level;
+};
+
 // the ring buffer works similarly to std::deque, but with a fixed capacity
 template<typename T>
 struct ring_buffer {
@@ -2461,6 +2469,34 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
     );
 }
 
+// Quantize embeddings from float32 to int8 for storage efficiency
+static void quantize_embeddings(const float* src, uint8_t* dst, size_t n, float* scale, float* min_val) {
+    // Find min and max values
+    float min = src[0];
+    float max = src[0];
+    
+    for (size_t i = 1; i < n; ++i) {
+        if (src[i] < min) min = src[i];
+        if (src[i] > max) max = src[i];
+    }
+    
+    // Calculate scale factor
+    *min_val = min;
+    *scale = (max - min) / 255.0f;
+    
+    // Quantize
+    for (size_t i = 0; i < n; ++i) {
+        dst[i] = (uint8_t)((src[i] - min) / *scale);
+    }
+}
+
+// Dequantize embeddings from int8 back to float32
+static void dequantize_embeddings(const uint8_t* src, float* dst, size_t n, float scale, float min_val) {
+    for (size_t i = 0; i < n; ++i) {
+        dst[i] = min_val + (src[i] * scale);
+    }
+}
+
 // utils
 
 uint32_t llama_sampler_get_seed(const struct llama_sampler * smpl) {
@@ -2487,6 +2523,26 @@ uint32_t llama_sampler_get_seed(const struct llama_sampler * smpl) {
     }
 
     return LLAMA_DEFAULT_SEED;
+}
+
+// Resource-guided vector search decision
+static bool should_use_vector_search(int battery_level, bool is_charging, float thermal_headroom, size_t available_memory_mb) {
+    // Skip vector search if battery is low and not charging
+    if (battery_level < 20 && !is_charging) {
+        return false;
+    }
+    
+    // Skip if device is thermally throttled
+    if (thermal_headroom < 0.2f) {
+        return false;
+    }
+    
+    // Skip if memory is constrained
+    if (available_memory_mb < 200) {
+        return false;
+    }
+    
+    return true;
 }
 
 // perf
