@@ -446,13 +446,40 @@ public class RNLlama implements LifecycleEventListener {
   public void embedding(double id, final String text, final ReadableMap params, final Promise promise) {
     final int contextId = (int) id;
     
+    // Get current device resource status
+    IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+    Intent batteryStatus = reactContext.getApplicationContext().registerReceiver(null, ifilter);
+    
+    int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+    int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+    float batteryPct = level * 100 / (float)scale;
+    int batteryLevel = (int)batteryPct;
+    
+    int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+    boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                         status == BatteryManager.BATTERY_STATUS_FULL;
+    
+    float thermalHeadroom = 1.0f;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      try {
+        android.os.PowerManager powerManager = (android.os.PowerManager) 
+            reactContext.getSystemService(Context.POWER_SERVICE);
+        thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+      } catch (Exception e) {
+        Log.e(NAME, "Failed to check thermal status", e);
+      }
+    }
+    
     // Check if we should defer embedding generation based on battery status
-    if (!isChargingOrHighBattery() && params.hasKey("deferOnLowBattery") && params.getBoolean("deferOnLowBattery")) {
-      WritableMap result = Arguments.createMap();
-      result.putBoolean("deferred", true);
-      result.putInt("batteryLevel", getBatteryLevel());
-      promise.resolve(result);
-      return;
+    if (params.hasKey("deferOnLowBattery") && params.getBoolean("deferOnLowBattery")) {
+      if (batteryLevel < 20 && !isCharging) {
+        WritableMap result = Arguments.createMap();
+        result.putBoolean("deferred", true);
+        result.putInt("batteryLevel", batteryLevel);
+        result.putFloat("thermalHeadroom", thermalHeadroom);
+        promise.resolve(result);
+        return;
+      }
     }
     
     AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
@@ -462,11 +489,24 @@ public class RNLlama implements LifecycleEventListener {
       protected WritableMap doInBackground(Void... voids) {
         try {
           // Check battery status again in case it changed
-          if (!isBatterySuitable() && params.hasKey("skipOnCriticalBattery") && params.getBoolean("skipOnCriticalBattery")) {
-            WritableMap result = Arguments.createMap();
-            result.putBoolean("skipped", true);
-            result.putInt("batteryLevel", getBatteryLevel());
-            return result;
+          if (params.hasKey("skipOnCriticalBattery") && params.getBoolean("skipOnCriticalBattery")) {
+            IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            Intent batteryStatus = reactContext.getApplicationContext().registerReceiver(null, ifilter);
+            
+            int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            int currentBatteryLevel = (int)(level * 100 / (float)scale);
+            
+            int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            boolean isCurrentlyCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                          status == BatteryManager.BATTERY_STATUS_FULL;
+                                          
+            if (currentBatteryLevel < 10 && !isCurrentlyCharging) {
+              WritableMap result = Arguments.createMap();
+              result.putBoolean("skipped", true);
+              result.putInt("batteryLevel", currentBatteryLevel);
+              return result;
+            }
           }
           
           LlamaContext context = contexts.get(contextId);
@@ -476,9 +516,28 @@ public class RNLlama implements LifecycleEventListener {
           
           WritableMap embedding = context.getEmbedding(text, params);
           
-          // Add battery metadata if requested
-          if (params.hasKey("includeBatteryMeta") && params.getBoolean("includeBatteryMeta")) {
-            embedding.putInt("batteryLevel", getBatteryLevel());
+          // Add device resource metadata
+          if (params.hasKey("includeResourceMeta") && params.getBoolean("includeResourceMeta")) {
+            embedding.putInt("batteryLevel", batteryLevel);
+            embedding.putBoolean("isCharging", isCharging);
+            embedding.putFloat("thermalHeadroom", thermalHeadroom);
+            
+            // Add memory info
+            android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+            android.app.ActivityManager activityManager = 
+                (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+            activityManager.getMemoryInfo(memoryInfo);
+            
+            embedding.putDouble("availableMemoryMB", memoryInfo.availMem / (1024.0 * 1024.0));
+            embedding.putBoolean("lowMemory", memoryInfo.lowMemory);
+          } else if (params.hasKey("includeBatteryMeta") && params.getBoolean("includeBatteryMeta")) {
+            // For backward compatibility
+            embedding.putInt("batteryLevel", batteryLevel);
+          }
+          
+          // Add quantization info if requested
+          if (params.hasKey("quantized") && params.getBoolean("quantized")) {
+            embedding.putBoolean("quantized", true);
           }
           
           return embedding;
@@ -732,28 +791,149 @@ public class RNLlama implements LifecycleEventListener {
    */
   @ReactMethod
   public void isThermallyThrottled(Promise promise) {
-    AsyncTask task = new AsyncTask<Void, Void, Boolean>() {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
       @Override
-      protected Boolean doInBackground(Void... voids) {
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
           try {
             android.os.PowerManager powerManager = (android.os.PowerManager) 
                 reactContext.getSystemService(Context.POWER_SERVICE);
-            return powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE) <= 0.3f;
+            float headroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+            boolean isThrottled = headroom <= 0.3f;
+            
+            result.putBoolean("isThrottled", isThrottled);
+            result.putDouble("thermalHeadroom", headroom);
+            
+            // Get thermal status
+            int thermalStatus = powerManager.getCurrentThermalStatus();
+            result.putInt("thermalStatus", thermalStatus);
+            
+            return result;
           } catch (Exception e) {
             Log.e(NAME, "Failed to check thermal status", e);
+            result.putBoolean("isThrottled", false);
+            result.putString("error", e.getMessage());
+            return result;
           }
         }
-        return false;
+        
+        result.putBoolean("isThrottled", false);
+        result.putString("reason", "API level too low");
+        return result;
       }
 
       @Override
-      protected void onPostExecute(Boolean result) {
+      protected void onPostExecute(WritableMap result) {
         promise.resolve(result);
         tasks.remove(this);
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "thermal-check");
+  }
+  
+  /**
+   * Check if vector search should be used based on device conditions
+   */
+  @ReactMethod
+  public void shouldUseVectorSearch(ReadableMap options, Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
+        // Get battery status
+        IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = reactContext.getApplicationContext().registerReceiver(null, ifilter);
+        
+        int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+        int batteryLevel = (int)(level * 100 / (float)scale);
+        
+        int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                             status == BatteryManager.BATTERY_STATUS_FULL;
+        
+        // Get thermal status
+        float thermalHeadroom = 1.0f;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          try {
+            android.os.PowerManager powerManager = (android.os.PowerManager) 
+                reactContext.getSystemService(Context.POWER_SERVICE);
+            thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+          } catch (Exception e) {
+            // Default to 0.5 if we can't get the thermal headroom
+            thermalHeadroom = 0.5f;
+          }
+        }
+        
+        // Get memory status
+        android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+        android.app.ActivityManager activityManager = 
+            (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+        activityManager.getMemoryInfo(memoryInfo);
+        double availableMemoryMB = memoryInfo.availMem / (1024.0 * 1024.0);
+        
+        // Check if this is a high-priority query
+        boolean isHighPriority = false;
+        if (options != null && options.hasKey("highPriority")) {
+          isHighPriority = options.getBoolean("highPriority");
+        }
+        
+        // Determine if we should use vector search
+        boolean shouldUse = true;
+        String reason = "";
+        
+        // Skip vector search if battery is critically low and not charging
+        if (batteryLevel < 15 && !isCharging) {
+          shouldUse = false;
+          reason = "Battery critically low (" + batteryLevel + "%)";
+        }
+        // Use reduced vector search if battery is low but not critical
+        else if (batteryLevel < 20 && !isCharging && !isHighPriority) {
+          shouldUse = false;
+          reason = "Battery low (" + batteryLevel + "%), not a high-priority query";
+        }
+        // Skip if device is thermally throttled
+        else if (thermalHeadroom < 0.2f) {
+          shouldUse = false;
+          reason = "Device is thermally throttled (headroom: " + thermalHeadroom + ")";
+        }
+        // Skip if memory is severely constrained
+        else if (availableMemoryMB < 100) {
+          shouldUse = false;
+          reason = "Memory critically low (" + (int)availableMemoryMB + " MB available)";
+        }
+        
+        result.putBoolean("shouldUseVectorSearch", shouldUse);
+        result.putString("reason", reason);
+        
+        // Add resource metrics
+        result.putInt("batteryLevel", batteryLevel);
+        result.putBoolean("isCharging", isCharging);
+        result.putDouble("thermalHeadroom", thermalHeadroom);
+        result.putDouble("availableMemoryMB", availableMemoryMB);
+        result.putBoolean("lowMemory", memoryInfo.lowMemory);
+        
+        // Add recommendation for vector search limit if memory is somewhat constrained
+        if (shouldUse && availableMemoryMB < 200) {
+          result.putBoolean("shouldLimitResults", true);
+          result.putInt("recommendedLimit", 20); // Recommend limiting to 20 results
+        } else {
+          result.putBoolean("shouldLimitResults", false);
+        }
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "vector-search-check");
   }
   /**
    * Get device resource status for RAG operations
@@ -777,8 +957,13 @@ public class RNLlama implements LifecycleEventListener {
         boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
                              status == BatteryManager.BATTERY_STATUS_FULL;
         
+        // Get battery temperature
+        int temperature = batteryStatus.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1);
+        float batteryTemp = temperature / 10.0f; // Temperature is in tenths of a degree
+        
         result.putInt("batteryLevel", (int)batteryPct);
         result.putBoolean("isCharging", isCharging);
+        result.putDouble("batteryTemperature", batteryTemp);
         
         // Memory status
         android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
@@ -790,6 +975,10 @@ public class RNLlama implements LifecycleEventListener {
         result.putDouble("totalMemoryMB", memoryInfo.totalMem / (1024.0 * 1024.0));
         result.putBoolean("lowMemory", memoryInfo.lowMemory);
         
+        // Calculate memory usage percentage
+        double memoryUsagePercent = 100.0 * (1.0 - (memoryInfo.availMem / (double)memoryInfo.totalMem));
+        result.putDouble("memoryUsagePercent", memoryUsagePercent);
+        
         // Thermal status on newer Android versions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
           try {
@@ -797,10 +986,47 @@ public class RNLlama implements LifecycleEventListener {
                 reactContext.getSystemService(Context.POWER_SERVICE);
             float headroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
             result.putDouble("thermalHeadroom", headroom);
+            
+            // Get thermal status
+            int thermalStatus = powerManager.getCurrentThermalStatus();
+            result.putInt("thermalStatus", thermalStatus);
+            
+            // Add human-readable thermal status
+            String thermalStatusString;
+            switch (thermalStatus) {
+              case android.os.PowerManager.THERMAL_STATUS_NONE:
+                thermalStatusString = "NONE";
+                break;
+              case android.os.PowerManager.THERMAL_STATUS_LIGHT:
+                thermalStatusString = "LIGHT";
+                break;
+              case android.os.PowerManager.THERMAL_STATUS_MODERATE:
+                thermalStatusString = "MODERATE";
+                break;
+              case android.os.PowerManager.THERMAL_STATUS_SEVERE:
+                thermalStatusString = "SEVERE";
+                break;
+              case android.os.PowerManager.THERMAL_STATUS_CRITICAL:
+                thermalStatusString = "CRITICAL";
+                break;
+              case android.os.PowerManager.THERMAL_STATUS_EMERGENCY:
+                thermalStatusString = "EMERGENCY";
+                break;
+              case android.os.PowerManager.THERMAL_STATUS_SHUTDOWN:
+                thermalStatusString = "SHUTDOWN";
+                break;
+              default:
+                thermalStatusString = "UNKNOWN";
+            }
+            result.putString("thermalStatusString", thermalStatusString);
           } catch (Exception e) {
             result.putNull("thermalHeadroom");
+            result.putString("thermalError", e.getMessage());
           }
         }
+        
+        // Add timestamp
+        result.putDouble("timestamp", System.currentTimeMillis());
         
         return result;
       }
@@ -812,5 +1038,82 @@ public class RNLlama implements LifecycleEventListener {
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "resource-status");
+  }
+  
+  /**
+   * Check if embedding generation should be deferred based on current device conditions
+   */
+  @ReactMethod
+  public void shouldDeferEmbeddingGeneration(Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
+        // Get battery status
+        IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = reactContext.getApplicationContext().registerReceiver(null, ifilter);
+        
+        int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+        int batteryLevel = (int)(level * 100 / (float)scale);
+        
+        int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                             status == BatteryManager.BATTERY_STATUS_FULL;
+        
+        // Get thermal status
+        float thermalHeadroom = 1.0f;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          try {
+            android.os.PowerManager powerManager = (android.os.PowerManager) 
+                reactContext.getSystemService(Context.POWER_SERVICE);
+            thermalHeadroom = powerManager.getThermalHeadroom(android.os.PowerManager.THERMAL_STATUS_MODERATE);
+          } catch (Exception e) {
+            // Default to 0.5 if we can't get the thermal headroom
+            thermalHeadroom = 0.5f;
+          }
+        }
+        
+        // Determine if we should defer
+        boolean shouldDefer = false;
+        String reason = "";
+        
+        if (batteryLevel < 20 && !isCharging) {
+          shouldDefer = true;
+          reason = "Low battery (" + batteryLevel + "%) and not charging";
+        } else if (thermalHeadroom < 0.15f) {
+          shouldDefer = true;
+          reason = "Device is thermally throttled (headroom: " + thermalHeadroom + ")";
+        }
+        
+        // Get memory status
+        android.app.ActivityManager.MemoryInfo memoryInfo = new android.app.ActivityManager.MemoryInfo();
+        android.app.ActivityManager activityManager = 
+            (android.app.ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+        activityManager.getMemoryInfo(memoryInfo);
+        
+        if (memoryInfo.lowMemory) {
+          shouldDefer = true;
+          reason = "Device is low on memory";
+        }
+        
+        result.putBoolean("shouldDefer", shouldDefer);
+        result.putString("reason", reason);
+        result.putInt("batteryLevel", batteryLevel);
+        result.putBoolean("isCharging", isCharging);
+        result.putFloat("thermalHeadroom", thermalHeadroom);
+        result.putBoolean("lowMemory", memoryInfo.lowMemory);
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "defer-check");
   }
 }

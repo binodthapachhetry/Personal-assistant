@@ -20,9 +20,12 @@
 // Embedding batch structure for efficient storage
 struct embedding_batch {
     std::vector<float> embedding;
+    std::vector<uint8_t> quantized_embedding;
     std::string text;
     int64_t timestamp;
     int battery_level;
+    float scale;
+    float min_val;
 };
 
 // the ring buffer works similarly to std::deque, but with a fixed capacity
@@ -2484,6 +2487,11 @@ static void quantize_embeddings(const float* src, uint8_t* dst, size_t n, float*
     *min_val = min;
     *scale = (max - min) / 255.0f;
     
+    // Prevent division by zero if all values are the same
+    if (*scale == 0.0f) {
+        *scale = 1.0f;
+    }
+    
     // Quantize
     for (size_t i = 0; i < n; ++i) {
         dst[i] = (uint8_t)((src[i] - min) / *scale);
@@ -2495,6 +2503,16 @@ static void dequantize_embeddings(const uint8_t* src, float* dst, size_t n, floa
     for (size_t i = 0; i < n; ++i) {
         dst[i] = min_val + (src[i] * scale);
     }
+}
+
+// Calculate the error between original and reconstructed embeddings
+static float calculate_quantization_error(const float* original, const float* reconstructed, size_t n) {
+    float sum_squared_error = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        float error = original[i] - reconstructed[i];
+        sum_squared_error += error * error;
+    }
+    return sqrt(sum_squared_error / n);
 }
 
 // utils
@@ -2527,9 +2545,15 @@ uint32_t llama_sampler_get_seed(const struct llama_sampler * smpl) {
 
 // Resource-guided vector search decision
 static bool should_use_vector_search(int battery_level, bool is_charging, float thermal_headroom, size_t available_memory_mb) {
-    // Skip vector search if battery is low and not charging
-    if (battery_level < 20 && !is_charging) {
+    // Skip vector search if battery is critically low and not charging
+    if (battery_level < 15 && !is_charging) {
         return false;
+    }
+    
+    // Use reduced vector search if battery is low but not critical
+    if (battery_level < 20 && !is_charging) {
+        // Only use vector search for high-priority queries
+        return false; // Default to false, caller can override for important queries
     }
     
     // Skip if device is thermally throttled
@@ -2537,12 +2561,48 @@ static bool should_use_vector_search(int battery_level, bool is_charging, float 
         return false;
     }
     
-    // Skip if memory is constrained
-    if (available_memory_mb < 200) {
+    // Skip if memory is severely constrained
+    if (available_memory_mb < 100) {
         return false;
     }
     
+    // Use limited vector search if memory is somewhat constrained
+    if (available_memory_mb < 200) {
+        // Caller should limit vector results
+        return true;
+    }
+    
     return true;
+}
+
+// Determine if embedding generation should be deferred based on device conditions
+static bool should_defer_embedding_generation(int battery_level, bool is_charging, float thermal_headroom) {
+    // Defer if battery is low and not charging
+    if (battery_level < 20 && !is_charging) {
+        return true;
+    }
+    
+    // Defer if device is thermally throttled
+    if (thermal_headroom < 0.15f) {
+        return true;
+    }
+    
+    return false;
+}
+
+// Determine if embedding generation should be skipped entirely (even when requested)
+static bool should_skip_embedding_generation(int battery_level, bool is_charging, float thermal_headroom) {
+    // Skip if battery is critically low and not charging
+    if (battery_level < 10 && !is_charging) {
+        return true;
+    }
+    
+    // Skip if device is severely thermally throttled
+    if (thermal_headroom < 0.1f) {
+        return true;
+    }
+    
+    return false;
 }
 
 // perf
