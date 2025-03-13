@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Iterator;
 import java.util.Map;
 import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.ReadableMapKeySetIterator;
 
 public class RNLlama implements LifecycleEventListener {
   public static final String NAME = "RNLlama";
@@ -1363,8 +1364,8 @@ public class RNLlama implements LifecycleEventListener {
                 // Swap
                 WritableArray tempArray = Arguments.createArray();
                 tempArray.pushMap(result2);
-                ((WritableArray)searchResults).pushMap(result1, j);
-                ((WritableArray)searchResults).pushMap(tempArray.getMap(0), j + 1);
+                ((WritableArray)searchResults).pushMap(result1);
+                ((WritableArray)searchResults).pushMap(tempArray.getMap(0));
               }
             }
           }
@@ -1391,6 +1392,61 @@ public class RNLlama implements LifecycleEventListener {
         return null;
       }
       
+  // Helper method to determine adaptive embedding dimension
+  private int getAdaptiveEmbeddingDimension(
+          int batteryLevel, 
+          boolean isCharging, 
+          float thermalHeadroom, 
+          double availableMemoryMB,
+          boolean isHighPriority) {
+          
+          // High priority embeddings get more dimensions
+          if (isHighPriority) {
+              // Still apply some reduction for critical conditions
+              if (batteryLevel < 10 && !isCharging) {
+                  return 384;
+              }
+              
+              // For high priority, use full dimensions when possible
+              if (isCharging || batteryLevel > 50 || thermalHeadroom > 0.4f) {
+                  return 1536; // Full dimension for most models
+              }
+              
+              // Moderate reduction for high priority under constraints
+              return 768;
+          }
+          
+          // Full dimension when charging with high battery and good thermal
+          if (isCharging && batteryLevel > 80 && thermalHeadroom > 0.5f) {
+              return 1536;
+          }
+          
+          // Critical resource constraints - use minimum dimension
+          if ((batteryLevel < 15 && !isCharging) || 
+              thermalHeadroom < 0.15f || 
+              availableMemoryMB < 100) {
+              return 128;
+          }
+          
+          // Low battery - reduce dimension significantly
+          if (batteryLevel < 30 && !isCharging) {
+              return 256;
+          }
+          
+          // Medium battery - reduce dimension moderately
+          if (batteryLevel < 50 || thermalHeadroom < 0.3f) {
+              return 384;
+          }
+          
+          // Memory constraints - adjust based on available memory
+          if (availableMemoryMB < 200) {
+              return 512;
+          }
+          
+          // Default - use 768 for good balance
+          return 768;
+      }
+
       // Helper method to calculate cosine similarity
       private double calculateCosineSimilarity(ReadableArray a, ReadableArray b) {
         double dotProduct = 0.0;
@@ -1782,7 +1838,7 @@ public class RNLlama implements LifecycleEventListener {
         result.putString("reason", reason);
         result.putInt("batteryLevel", batteryLevel);
         result.putBoolean("isCharging", isCharging);
-        result.putFloat("thermalHeadroom", thermalHeadroom);
+        result.putDouble("thermalHeadroom", (double)thermalHeadroom);
         result.putBoolean("lowMemory", memoryInfo.lowMemory);
         
         return result;
