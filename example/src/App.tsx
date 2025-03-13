@@ -11,9 +11,10 @@ const customTheme = {
   ...darkTheme,
   colors: {
     ...darkTheme.colors,
-    background: '#1A1A2E', // Change this to your desired background color
-    inputBackground: '#252A37', // Change input box background
-    secondary: '#6A5ACD', // This will change the assistant bubble color
+    background: '#f5f5f5', // Change this to your desired background color
+    inputBackground: '#333333', // Change input box background
+    secondary: '#0d010c', // This will change the assistant bubble color
+    primary: '#4A90E2',   // User bubble color - add or modify this line
   }
 }
 import type { MessageType } from '@flyerhq/react-native-chat-ui'

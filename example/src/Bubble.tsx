@@ -23,7 +23,7 @@ export const Bubble = ({
     <Container
       style={{
         backgroundColor: isAssistant 
-          ? '#6A5ACD' // Assistant message color
+          ? '#2f9153' // Assistant message color
           : currentUserIsAuthor && message.type !== 'image'
             ? theme.colors.primary
             : theme.colors.secondary,
@@ -47,7 +47,7 @@ export const Bubble = ({
         <Text
           style={{
             textAlign: 'right',
-            color: '#d99ee8',
+            color: '#E8EBF1',
             paddingRight: 12,
             paddingBottom: 12,
             marginTop: -8,
