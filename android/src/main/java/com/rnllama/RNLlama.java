@@ -23,12 +23,17 @@ import java.util.HashMap;
 import java.util.Random;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.PushbackInputStream;
 import java.io.RandomAccessFile;
 import java.util.Map;
 
 import java.util.Iterator;
 import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.ReadableMapKeySetIterator;
 
@@ -42,6 +47,49 @@ public class RNLlama implements LifecycleEventListener {
   public RNLlama(ReactApplicationContext reactContext) {
     reactContext.addLifecycleEventListener(this);
     this.reactContext = reactContext;
+    
+    // Start periodic auto-save
+    startPeriodicAutoSave();
+  }
+  
+  private Handler autoSaveHandler;
+  private static final long AUTO_SAVE_INTERVAL_MS = 60000; // 1 minute
+  
+  /**
+   * Start periodic auto-save of conversations
+   */
+  private void startPeriodicAutoSave() {
+    if (autoSaveHandler == null) {
+      autoSaveHandler = new Handler();
+    }
+    
+    // Define the auto-save runnable
+    Runnable autoSaveRunnable = new Runnable() {
+      @Override
+      public void run() {
+        // Check if auto-save is enabled
+        android.content.SharedPreferences settings = reactContext.getSharedPreferences(
+            "LlamaSettings", android.content.Context.MODE_PRIVATE);
+        boolean autoSaveEnabled = settings.getBoolean("auto_save_enabled", true);
+        
+        if (autoSaveEnabled) {
+          // Run auto-save in background
+          new AsyncTask<Void, Void, Void>() {
+            @Override
+            protected Void doInBackground(Void... voids) {
+              saveAllConversations();
+              return null;
+            }
+          }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        }
+        
+        // Schedule next run
+        autoSaveHandler.postDelayed(this, AUTO_SAVE_INTERVAL_MS);
+      }
+    };
+    
+    // Start the periodic task
+    autoSaveHandler.postDelayed(autoSaveRunnable, AUTO_SAVE_INTERVAL_MS);
   }
 
   private HashMap<AsyncTask, String> tasks = new HashMap<>();
@@ -384,6 +432,19 @@ public class RNLlama implements LifecycleEventListener {
             throw new Exception("Context is busy");
           }
           WritableMap result = context.completion(params);
+          
+          // Auto-save after completion
+          android.content.SharedPreferences settings = reactContext.getSharedPreferences(
+              "LlamaSettings", android.content.Context.MODE_PRIVATE);
+          boolean autoSaveEnabled = settings.getBoolean("auto_save_enabled", true);
+          
+          if (autoSaveEnabled && context.hasConversationState()) {
+            String conversationState = context.getConversationState();
+            if (conversationState != null && !conversationState.isEmpty()) {
+              saveConversationToStorage(contextId, conversationState);
+            }
+          }
+          
           return result;
         } catch (Exception e) {
           exception = e;
@@ -962,14 +1023,59 @@ public class RNLlama implements LifecycleEventListener {
 
   @Override
   public void onHostResume() {
+    // Restore conversations when app comes to foreground
+    restoreConversations();
   }
 
   @Override
   public void onHostPause() {
+    // Save conversations when app goes to background
+    saveAllConversations();
+  }
+  
+  /**
+   * Restore conversations from persistent storage
+   */
+  private void restoreConversations() {
+    try {
+      android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+          "LlamaConversations", android.content.Context.MODE_PRIVATE);
+      
+      // Find all saved conversations
+      Map<String, ?> allPrefs = prefs.getAll();
+      for (String key : allPrefs.keySet()) {
+        if (key.startsWith("conversation_") && !key.contains("timestamp")) {
+          try {
+            // Extract context ID from key
+            String idStr = key.substring("conversation_".length());
+            int contextId = Integer.parseInt(idStr);
+            
+            // Check if this context exists
+            LlamaContext context = contexts.get(contextId);
+            if (context != null) {
+              // Get conversation state
+              String conversationState = prefs.getString(key, null);
+              if (conversationState != null && !conversationState.isEmpty()) {
+                // Restore conversation state
+                context.restoreConversationState(conversationState);
+                Log.d(NAME, "Restored conversation for context " + contextId);
+              }
+            }
+          } catch (NumberFormatException e) {
+            Log.e(NAME, "Invalid context ID in saved conversation key: " + key, e);
+          }
+        }
+      }
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to restore conversations", e);
+    }
   }
 
   @Override
   public void onHostDestroy() {
+    // Save all active conversations before destroying contexts
+    saveAllConversations();
+    
     for (LlamaContext context : contexts.values()) {
       context.stopCompletion();
     }
@@ -985,6 +1091,502 @@ public class RNLlama implements LifecycleEventListener {
       context.release();
     }
     contexts.clear();
+  }
+  
+  /**
+   * Save all active conversations to persistent storage
+   */
+  private void saveAllConversations() {
+    try {
+      // Check if auto-save is enabled
+      android.content.SharedPreferences settings = reactContext.getSharedPreferences(
+          "LlamaSettings", android.content.Context.MODE_PRIVATE);
+      boolean autoSaveEnabled = settings.getBoolean("auto_save_enabled", true); // Default to true
+      
+      if (!autoSaveEnabled) {
+        Log.d(NAME, "Auto-save is disabled, skipping conversation save");
+        return;
+      }
+      
+      for (Map.Entry<Integer, LlamaContext> entry : contexts.entrySet()) {
+        int contextId = entry.getKey();
+        LlamaContext context = entry.getValue();
+        
+        // Skip if context is not associated with a conversation
+        if (context == null || !context.hasConversationState()) {
+          continue;
+        }
+        
+        // Get conversation state from context
+        String conversationState = context.getConversationState();
+        if (conversationState != null && !conversationState.isEmpty()) {
+          // Save to storage
+          saveConversationToStorage(contextId, conversationState);
+        }
+      }
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to save conversations", e);
+    }
+  }
+  
+  /**
+   * Save a single conversation to storage
+   */
+  private void saveConversationToStorage(int contextId, String conversationState) {
+    try {
+      // Use SharedPreferences for storage
+      android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+          "LlamaConversations", android.content.Context.MODE_PRIVATE);
+      
+      android.content.SharedPreferences.Editor editor = prefs.edit();
+      editor.putString("conversation_" + contextId, conversationState);
+      editor.putLong("conversation_timestamp_" + contextId, System.currentTimeMillis());
+      editor.apply();
+      
+      Log.d(NAME, "Saved conversation for context " + contextId);
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to save conversation for context " + contextId, e);
+    }
+  }
+  
+  /**
+   * Save conversation state for a specific context
+   */
+  @ReactMethod
+  public void saveConversation(double id, final ReadableMap params, final Promise promise) {
+    final int contextId = (int) id;
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      private Exception exception;
+
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        try {
+          WritableMap result = Arguments.createMap();
+          
+          LlamaContext context = contexts.get(contextId);
+          if (context == null) {
+            throw new Exception("Context not found");
+          }
+          
+          // Get conversation state
+          String conversationState = context.getConversationState();
+          if (conversationState == null || conversationState.isEmpty()) {
+            result.putBoolean("success", false);
+            result.putString("error", "No conversation state available");
+            return result;
+          }
+          
+          // Get storage path if provided
+          String storagePath = null;
+          if (params != null && params.hasKey("path")) {
+            storagePath = params.getString("path");
+          }
+          
+          if (storagePath != null && !storagePath.isEmpty()) {
+            // Save to file
+            File file = new File(storagePath);
+            File directory = file.getParentFile();
+            if (directory != null && !directory.exists()) {
+              directory.mkdirs();
+            }
+            
+            FileOutputStream fos = new FileOutputStream(file);
+            fos.write(conversationState.getBytes());
+            fos.close();
+            
+            result.putString("path", storagePath);
+          } else {
+            // Save to SharedPreferences
+            saveConversationToStorage(contextId, conversationState);
+          }
+          
+          result.putBoolean("success", true);
+          result.putDouble("timestamp", System.currentTimeMillis());
+          return result;
+        } catch (Exception e) {
+          exception = e;
+          return null;
+        }
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "saveConversation-" + contextId);
+  }
+  
+  /**
+   * Restore conversation state for a specific context
+   */
+  @ReactMethod
+  public void restoreConversation(double id, final ReadableMap params, final Promise promise) {
+    final int contextId = (int) id;
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      private Exception exception;
+
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        try {
+          WritableMap result = Arguments.createMap();
+          
+          LlamaContext context = contexts.get(contextId);
+          if (context == null) {
+            throw new Exception("Context not found");
+          }
+          
+          String conversationState = null;
+          
+          // Check if path is provided
+          if (params != null && params.hasKey("path")) {
+            String path = params.getString("path");
+            File file = new File(path);
+            
+            if (file.exists()) {
+              // Read from file
+              FileInputStream fis = new FileInputStream(file);
+              byte[] data = new byte[(int) file.length()];
+              fis.read(data);
+              fis.close();
+              
+              conversationState = new String(data);
+              result.putString("source", "file");
+              result.putString("path", path);
+            }
+          } else {
+            // Try to restore from SharedPreferences
+            android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+                "LlamaConversations", android.content.Context.MODE_PRIVATE);
+            
+            conversationState = prefs.getString("conversation_" + contextId, null);
+            if (conversationState != null) {
+              result.putString("source", "preferences");
+              long timestamp = prefs.getLong("conversation_timestamp_" + contextId, 0);
+              result.putDouble("timestamp", timestamp);
+            }
+          }
+          
+          if (conversationState != null && !conversationState.isEmpty()) {
+            // Restore conversation state
+            boolean restored = context.restoreConversationState(conversationState);
+            result.putBoolean("success", restored);
+          } else {
+            result.putBoolean("success", false);
+            result.putString("error", "No saved conversation found");
+          }
+          
+          return result;
+        } catch (Exception e) {
+          exception = e;
+          return null;
+        }
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "restoreConversation-" + contextId);
+  }
+  
+  /**
+   * Get list of all saved conversations
+   */
+  @ReactMethod
+  public void getSavedConversations(Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        WritableArray conversations = Arguments.createArray();
+        
+        try {
+          android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+              "LlamaConversations", android.content.Context.MODE_PRIVATE);
+          
+          // Find all saved conversations
+          Map<String, ?> allPrefs = prefs.getAll();
+          for (String key : allPrefs.keySet()) {
+            if (key.startsWith("conversation_") && !key.contains("timestamp")) {
+              try {
+                // Extract context ID from key
+                String idStr = key.substring("conversation_".length());
+                int contextId = Integer.parseInt(idStr);
+                
+                // Get timestamp
+                long timestamp = prefs.getLong("conversation_timestamp_" + contextId, 0);
+                
+                // Create conversation info
+                WritableMap conversation = Arguments.createMap();
+                conversation.putInt("contextId", contextId);
+                conversation.putDouble("timestamp", timestamp);
+                
+                // Check if this context still exists
+                boolean active = contexts.containsKey(contextId);
+                conversation.putBoolean("active", active);
+                
+                conversations.pushMap(conversation);
+              } catch (NumberFormatException e) {
+                Log.e(NAME, "Invalid context ID in saved conversation key: " + key, e);
+              }
+            }
+          }
+          
+          result.putArray("conversations", conversations);
+          result.putBoolean("success", true);
+        } catch (Exception e) {
+          result.putBoolean("success", false);
+          result.putString("error", e.getMessage());
+        }
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "getSavedConversations");
+  }
+  
+  /**
+   * Delete a saved conversation
+   */
+  @ReactMethod
+  public void deleteSavedConversation(double id, Promise promise) {
+    final int contextId = (int) id;
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
+        try {
+          android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+              "LlamaConversations", android.content.Context.MODE_PRIVATE);
+          
+          android.content.SharedPreferences.Editor editor = prefs.edit();
+          editor.remove("conversation_" + contextId);
+          editor.remove("conversation_timestamp_" + contextId);
+          editor.apply();
+          
+          result.putBoolean("success", true);
+        } catch (Exception e) {
+          result.putBoolean("success", false);
+          result.putString("error", e.getMessage());
+        }
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "deleteSavedConversation");
+  }
+  
+  /**
+   * Configure auto-save settings
+   */
+  @ReactMethod
+  public void configureAutoSave(ReadableMap config, Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
+        try {
+          android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+              "LlamaSettings", android.content.Context.MODE_PRIVATE);
+          
+          android.content.SharedPreferences.Editor editor = prefs.edit();
+          
+          // Update enabled state if provided
+          if (config.hasKey("enabled")) {
+            boolean enabled = config.getBoolean("enabled");
+            editor.putBoolean("auto_save_enabled", enabled);
+            result.putBoolean("autoSaveEnabled", enabled);
+          }
+          
+          // Update interval if provided
+          if (config.hasKey("intervalMs")) {
+            long intervalMs = (long) config.getDouble("intervalMs");
+            if (intervalMs >= 5000) { // Minimum 5 seconds
+              editor.putLong("auto_save_interval_ms", intervalMs);
+              result.putDouble("autoSaveIntervalMs", intervalMs);
+            }
+          }
+          
+          // Update max saved conversations if provided
+          if (config.hasKey("maxSavedConversations")) {
+            int maxSaved = config.getInt("maxSavedConversations");
+            if (maxSaved > 0) {
+              editor.putInt("max_saved_conversations", maxSaved);
+              result.putInt("maxSavedConversations", maxSaved);
+              
+              // Enforce the limit
+              enforceMaxSavedConversationsLimit(maxSaved);
+            }
+          }
+          
+          editor.apply();
+          
+          // Get current settings
+          boolean enabled = prefs.getBoolean("auto_save_enabled", true);
+          long intervalMs = prefs.getLong("auto_save_interval_ms", AUTO_SAVE_INTERVAL_MS);
+          int maxSaved = prefs.getInt("max_saved_conversations", 50);
+          
+          if (!result.hasKey("autoSaveEnabled")) {
+            result.putBoolean("autoSaveEnabled", enabled);
+          }
+          if (!result.hasKey("autoSaveIntervalMs")) {
+            result.putDouble("autoSaveIntervalMs", intervalMs);
+          }
+          if (!result.hasKey("maxSavedConversations")) {
+            result.putInt("maxSavedConversations", maxSaved);
+          }
+          
+          result.putBoolean("success", true);
+        } catch (Exception e) {
+          result.putBoolean("success", false);
+          result.putString("error", e.getMessage());
+        }
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "configureAutoSave");
+  }
+  
+  /**
+   * Enforce the maximum number of saved conversations by removing oldest ones
+   */
+  private void enforceMaxSavedConversationsLimit(int maxSaved) {
+    try {
+      android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+          "LlamaConversations", android.content.Context.MODE_PRIVATE);
+      
+      // Find all saved conversations
+      Map<String, ?> allPrefs = prefs.getAll();
+      
+      // Create a list of conversation IDs and timestamps
+      HashMap<Integer, Long> conversationTimestamps = new HashMap<>();
+      
+      for (String key : allPrefs.keySet()) {
+        if (key.startsWith("conversation_timestamp_")) {
+          try {
+            String idStr = key.substring("conversation_timestamp_".length());
+            int contextId = Integer.parseInt(idStr);
+            long timestamp = (long) allPrefs.get(key);
+            
+            conversationTimestamps.put(contextId, timestamp);
+          } catch (NumberFormatException e) {
+            Log.e(NAME, "Invalid context ID in saved conversation key: " + key, e);
+          }
+        }
+      }
+      
+      // If we have more than the max, remove oldest ones
+      if (conversationTimestamps.size() > maxSaved) {
+        // Sort by timestamp (oldest first)
+        List<Map.Entry<Integer, Long>> sortedEntries = new ArrayList<>(conversationTimestamps.entrySet());
+        Collections.sort(sortedEntries, new Comparator<Map.Entry<Integer, Long>>() {
+          @Override
+          public int compare(Map.Entry<Integer, Long> o1, Map.Entry<Integer, Long> o2) {
+            return o1.getValue().compareTo(o2.getValue());
+          }
+        });
+        
+        // Remove oldest conversations
+        android.content.SharedPreferences.Editor editor = prefs.edit();
+        int toRemove = conversationTimestamps.size() - maxSaved;
+        
+        for (int i = 0; i < toRemove; i++) {
+          int contextId = sortedEntries.get(i).getKey();
+          editor.remove("conversation_" + contextId);
+          editor.remove("conversation_timestamp_" + contextId);
+          Log.d(NAME, "Removing old conversation for context " + contextId);
+        }
+        
+        editor.apply();
+      }
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to enforce max saved conversations limit", e);
+    }
+  }
+  
+  /**
+   * Get auto-save settings
+   */
+  @ReactMethod
+  public void getAutoSaveSettings(Promise promise) {
+    AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
+      @Override
+      protected WritableMap doInBackground(Void... voids) {
+        WritableMap result = Arguments.createMap();
+        
+        try {
+          android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+              "LlamaSettings", android.content.Context.MODE_PRIVATE);
+          
+          boolean enabled = prefs.getBoolean("auto_save_enabled", true); // Default to true
+          long intervalMs = prefs.getLong("auto_save_interval_ms", AUTO_SAVE_INTERVAL_MS);
+          int maxSaved = prefs.getInt("max_saved_conversations", 50);
+          
+          result.putBoolean("success", true);
+          result.putBoolean("autoSaveEnabled", enabled);
+          result.putDouble("autoSaveIntervalMs", intervalMs);
+          result.putInt("maxSavedConversations", maxSaved);
+          
+          // Get storage info
+          android.content.SharedPreferences convPrefs = reactContext.getSharedPreferences(
+              "LlamaConversations", android.content.Context.MODE_PRIVATE);
+          
+          int savedCount = 0;
+          for (String key : convPrefs.getAll().keySet()) {
+            if (key.startsWith("conversation_") && !key.contains("timestamp")) {
+              savedCount++;
+            }
+          }
+          
+          result.putInt("savedConversationsCount", savedCount);
+        } catch (Exception e) {
+          result.putBoolean("success", false);
+          result.putString("error", e.getMessage());
+        }
+        
+        return result;
+      }
+
+      @Override
+      protected void onPostExecute(WritableMap result) {
+        promise.resolve(result);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    tasks.put(task, "getAutoSaveSettings");
   }
   
   /**
