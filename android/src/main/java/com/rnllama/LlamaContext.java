@@ -157,10 +157,18 @@ public class LlamaContext {
         state.putInt("contextId", this.id);
         state.putDouble("timestamp", System.currentTimeMillis());
         
-        // Get session tokens if available
-        WritableMap session = saveSession(this.context, 
-            reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin", 
-            -1); // -1 means all tokens
+        // // Get session tokens if available
+        // WritableMap session = saveSession(this.context, 
+        //     reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin", 
+        //     -1); // -1 means all tokens
+
+        int tokenCount = saveSession(this.context,
+          reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin", 
+          -1); // -1 means all tokens
+        
+        // Create a WritableMap to store the token count                                                                                        
+        WritableMap session = Arguments.createMap();
+        session.putInt("n_tokens", tokenCount);
         
         if (session != null && session.hasKey("n_tokens")) {
           state.putMap("session", session);
@@ -181,13 +189,14 @@ public class LlamaContext {
    */
   public boolean restoreConversationState(String state) {
     if (state == null || state.isEmpty()) {
+      Log.d(NAME, "STATE NULL OR EMPTY");
       return false;
     }
     
     try {
       // Store the state
       conversationState = state;
-      
+      Log.d(NAME, "RESTORED CONVERSATION");
       // Parse state if needed for restoration
       // For now, we just store it and return success
       return true;
