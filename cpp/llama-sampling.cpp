@@ -65,7 +65,7 @@ struct mmap_embedding_store {
     } vectors;
 
     // Add constructor and destructor                                                                                                   
-     mmap_embedding_store() : mapping(nullptr), count(0), capacity(0), dim(0),                                                           
+     mmap_embedding_store() : mapped_addr(nullptr), count(0), capacity(0), dim(0),                                                           
                              is_quantized(false), headers(nullptr),                                                                      
                              text_data(nullptr) {                                                                                        
          vectors.float_data = nullptr;                                                                                                   
