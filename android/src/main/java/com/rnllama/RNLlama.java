@@ -54,6 +54,20 @@ public class RNLlama implements LifecycleEventListener {
   
   private Handler autoSaveHandler;
   private static final long AUTO_SAVE_INTERVAL_MS = 60000; // 1 minute
+
+
+   @ReactMethod                                                                                                                            
+  public void addListener(String eventName) {                                                                                             
+    // Keep track of event listeners                                                                                                      
+    // This method is required by NativeEventEmitter                                                                                      
+  }                                                                                                                                       
+                                                                                                                                          
+  @ReactMethod                                                                                                                            
+  public void removeListeners(Integer count) {                                                                                            
+    // Remove event listeners                                                                                                             
+    // This method is required by NativeEventEmitter                                                                                      
+  }                                                                                                                                       
+   
   
   /**
    * Start periodic auto-save of conversations
@@ -77,6 +91,7 @@ public class RNLlama implements LifecycleEventListener {
           new AsyncTask<Void, Void, Void>() {
             @Override
             protected Void doInBackground(Void... voids) {
+              Log.d(NAME, "SAVING ALL CONVERSATIONS PERIODICAUTOSAVE");
               saveAllConversations();
               return null;
             }
@@ -1030,6 +1045,7 @@ public class RNLlama implements LifecycleEventListener {
   @Override
   public void onHostPause() {
     // Save conversations when app goes to background
+    Log.d(NAME, "SAVING ALL CONVERSATIONS ONHOSTPAUSE");
     saveAllConversations();
   }
   
@@ -1042,9 +1058,12 @@ public class RNLlama implements LifecycleEventListener {
           "LlamaConversations", android.content.Context.MODE_PRIVATE);
       
       // Find all saved conversations
+      Log.d(NAME, "FINDING ALL SAVED CONVERSATIONS");
+
       Map<String, ?> allPrefs = prefs.getAll();
       for (String key : allPrefs.keySet()) {
         if (key.startsWith("conversation_") && !key.contains("timestamp")) {
+          Log.d(NAME, "FOUND SAVED CONVERSATIONS");
           try {
             // Extract context ID from key
             String idStr = key.substring("conversation_".length());
@@ -1052,14 +1071,20 @@ public class RNLlama implements LifecycleEventListener {
             
             // Check if this context exists
             LlamaContext context = contexts.get(contextId);
+            Log.d(NAME, "CHECKING IF CONTEXT EXISTS");
             if (context != null) {
               // Get conversation state
               String conversationState = prefs.getString(key, null);
+              Log.d(NAME, "CHECKING IF CONVERSATION STATE EXISTS");
               if (conversationState != null && !conversationState.isEmpty()) {
                 // Restore conversation state
                 context.restoreConversationState(conversationState);
                 Log.d(NAME, "Restored conversation for context " + contextId);
+              }else{
+                Log.d(NAME, "CONVERSATION STATE IS NULL");
               }
+            }else{
+              Log.d(NAME, "CONTEXT IS NULL");
             }
           } catch (NumberFormatException e) {
             Log.e(NAME, "Invalid context ID in saved conversation key: " + key, e);
@@ -1074,6 +1099,8 @@ public class RNLlama implements LifecycleEventListener {
   @Override
   public void onHostDestroy() {
     // Save all active conversations before destroying contexts
+    Log.d(NAME, "SAVING ALL CONVERSATIONS ONHOSTDESTROY");
+
     saveAllConversations();
     
     for (LlamaContext context : contexts.values()) {
@@ -1102,12 +1129,16 @@ public class RNLlama implements LifecycleEventListener {
       android.content.SharedPreferences settings = reactContext.getSharedPreferences(
           "LlamaSettings", android.content.Context.MODE_PRIVATE);
       boolean autoSaveEnabled = settings.getBoolean("auto_save_enabled", true); // Default to true
+
+      Log.d(NAME, "INSIDE SAVE ALL CONVERSATIONS");
       
       if (!autoSaveEnabled) {
         Log.d(NAME, "Auto-save is disabled, skipping conversation save");
         return;
       }
-      
+
+      Log.d(NAME, "AUTO-SAVE IS NOT DISABLED");
+
       for (Map.Entry<Integer, LlamaContext> entry : contexts.entrySet()) {
         int contextId = entry.getKey();
         LlamaContext context = entry.getValue();
@@ -1116,11 +1147,14 @@ public class RNLlama implements LifecycleEventListener {
         if (context == null || !context.hasConversationState()) {
           continue;
         }
+
+        Log.d(NAME, "CONTEXT IS NOT NULL");
         
         // Get conversation state from context
         String conversationState = context.getConversationState();
         if (conversationState != null && !conversationState.isEmpty()) {
           // Save to storage
+          Log.d(NAME, "SAVING CONVERSATION TO STORAGE");
           saveConversationToStorage(contextId, conversationState);
         }
       }

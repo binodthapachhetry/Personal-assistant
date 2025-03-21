@@ -465,11 +465,11 @@ export default function App() {
     }
   }
 
-  // Example: Get model info without initializing context
+  // // Example: Get model info without initializing context
   const getModelInfo = async (model: string) => {
     const t0 = Date.now()
     const info = await loadLlamaModelInfo(model)
-    console.log(`Model info (took ${Date.now() - t0}ms): `, info)
+    // console.log(`Model info (took ${Date.now() - t0}ms): `, info)
   }
   
   // Handle app state changes
@@ -956,13 +956,14 @@ export default function App() {
       const t0 = Date.now()
       const { tokens } = (await context?.tokenize(prompt)) || {}
       const t1 = Date.now()
-      console.log(
-        'Formatted:',
-        formatted,
-        '\nTokenize:',
-        tokens,
-        `(${tokens?.length} tokens, ${t1 - t0}ms})`,
-      )
+
+      // console.log(
+      //   'Formatted:',
+      //   formatted,
+      //   '\nTokenize:',
+      //   tokens,
+      //   `(${tokens?.length} tokens, ${t1 - t0}ms})`,
+      // )
 
       // Test embedding
       // await context?.embedding(prompt).then((result) => {
@@ -1059,7 +1060,7 @@ export default function App() {
         },
       )
       .then((completionResult) => {
-        console.log('completionResult: ', completionResult)
+        // console.log('completionResult: ', completionResult)
         const timings = `${completionResult.timings.predicted_per_token_ms.toFixed()}ms per token, ${completionResult.timings.predicted_per_second.toFixed(
           2,
         )} tokens per second`
