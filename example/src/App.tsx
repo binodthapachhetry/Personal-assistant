@@ -515,6 +515,30 @@ export default function App() {
       )
     }
   }, [])
+  
+  // Check for restored conversation when context is loaded
+  useEffect(() => {
+    if (context) {
+      // If we have a context but no messages, check if there's a restored conversation
+      if (messages.length <= 1) { // Only welcome message or empty
+        addSystemMessage('Checking for saved conversation...')
+        
+        // This will trigger the native code to check for saved conversations
+        context.saveSession(`${dirs.DocumentDir}/dummy_session.bin`)
+          .then(() => {
+            // Wait a moment for any restored messages to appear
+            setTimeout(() => {
+              if (messages.length <= 2) { // Still only welcome + checking message
+                addSystemMessage('No saved conversation found or restoration failed.')
+              }
+            }, 500)
+          })
+          .catch(err => {
+            console.error('Error checking for saved conversation:', err)
+          })
+      }
+    }
+  }, [context])
 
   const handleInitContext = async (
     file: DocumentPickerResponse,

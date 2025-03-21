@@ -43,6 +43,9 @@ public class RNLlama implements LifecycleEventListener {
   private ReactApplicationContext reactContext;
   private static final int MIN_BATTERY_LEVEL = 20; // Minimum battery level for embedding generation
   private static final int HIGH_BATTERY_LEVEL = 50; // High battery level threshold
+  
+  // Store saved conversation states by context ID
+  private HashMap<Integer, String> savedConversationStates = new HashMap<>();
 
   public RNLlama(ReactApplicationContext reactContext) {
     reactContext.addLifecycleEventListener(this);
@@ -301,6 +304,16 @@ public class RNLlama implements LifecycleEventListener {
             throw new Exception("Failed to initialize context");
           }
           contexts.put(contextId, llamaContext);
+          
+          // Check if we have a saved conversation state for this context
+          if (savedConversationStates.containsKey(contextId)) {
+            String savedState = savedConversationStates.get(contextId);
+            if (savedState != null && !savedState.isEmpty()) {
+              boolean restored = llamaContext.restoreConversationState(savedState);
+              Log.d(NAME, "Restored saved conversation for context " + contextId + ": " + (restored ? "success" : "failed"));
+            }
+          }
+          
           WritableMap result = Arguments.createMap();
           result.putBoolean("gpu", false);
           result.putString("reasonNoGPU", "Currently not supported");
@@ -1063,28 +1076,29 @@ public class RNLlama implements LifecycleEventListener {
       Map<String, ?> allPrefs = prefs.getAll();
       for (String key : allPrefs.keySet()) {
         if (key.startsWith("conversation_") && !key.contains("timestamp")) {
-          Log.d(NAME, "FOUND SAVED CONVERSATIONS");
+          Log.d(NAME, "FOUND SAVED CONVERSATION: " + key);
           try {
             // Extract context ID from key
             String idStr = key.substring("conversation_".length());
             int contextId = Integer.parseInt(idStr);
             
-            // Check if this context exists
-            LlamaContext context = contexts.get(contextId);
-            Log.d(NAME, "CHECKING IF CONTEXT EXISTS");
-            if (context != null) {
-              // Get conversation state
-              String conversationState = prefs.getString(key, null);
-              Log.d(NAME, "CHECKING IF CONVERSATION STATE EXISTS");
-              if (conversationState != null && !conversationState.isEmpty()) {
-                // Restore conversation state
+            // Get conversation state
+            String conversationState = prefs.getString(key, null);
+            if (conversationState != null && !conversationState.isEmpty()) {
+              // Store the conversation state in memory
+              savedConversationStates.put(contextId, conversationState);
+              Log.d(NAME, "Loaded conversation state for context " + contextId);
+              
+              // If context already exists, restore immediately
+              LlamaContext context = contexts.get(contextId);
+              if (context != null) {
                 context.restoreConversationState(conversationState);
-                Log.d(NAME, "Restored conversation for context " + contextId);
-              }else{
-                Log.d(NAME, "CONVERSATION STATE IS NULL");
+                Log.d(NAME, "Restored conversation for existing context " + contextId);
+              } else {
+                Log.d(NAME, "Context " + contextId + " not loaded yet, will restore when created");
               }
-            }else{
-              Log.d(NAME, "CONTEXT IS NULL");
+            } else {
+              Log.d(NAME, "CONVERSATION STATE IS NULL");
             }
           } catch (NumberFormatException e) {
             Log.e(NAME, "Invalid context ID in saved conversation key: " + key, e);
