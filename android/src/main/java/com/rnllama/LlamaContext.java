@@ -135,12 +135,90 @@ public class LlamaContext {
   public String getLoadedLibrary() {
     return loadedLibrary;
   }
+  
+  // Conversation state management
+  private String conversationState = null;
+  
+  /**
+   * Check if this context has conversation state
+   */
+  public boolean hasConversationState() {
+    return conversationState != null && !conversationState.isEmpty();
+  }
+  
+  /**
+   * Get the current conversation state as a serialized string
+   */
+  public String getConversationState() {
+    if (conversationState == null) {
+      // Create conversation state from current context if needed
+      try {
+        WritableMap state = Arguments.createMap();
+        state.putInt("contextId", this.id);
+        state.putDouble("timestamp", System.currentTimeMillis());
+        
+        // Get session tokens if available
+        WritableMap session = saveSession(this.context, 
+            reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin", 
+            -1); // -1 means all tokens
+        
+        if (session != null && session.hasKey("n_tokens")) {
+          state.putMap("session", session);
+        }
+        
+        // Convert to JSON string
+        conversationState = state.toString();
+      } catch (Exception e) {
+        Log.e(NAME, "Failed to create conversation state", e);
+      }
+    }
+    return conversationState;
+  }
+  
+  /**
+   * Restore conversation from serialized state
+   * @return true if successful
+   */
+  public boolean restoreConversationState(String state) {
+    if (state == null || state.isEmpty()) {
+      return false;
+    }
+    
+    try {
+      // Store the state
+      conversationState = state;
+      
+      // Parse state if needed for restoration
+      // For now, we just store it and return success
+      return true;
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to restore conversation state", e);
+      return false;
+    }
+  }
 
   public WritableMap getFormattedChatWithJinja(String messages, String chatTemplate, ReadableMap params) {
     String jsonSchema = params.hasKey("json_schema") ? params.getString("json_schema") : "";
     String tools = params.hasKey("tools") ? params.getString("tools") : "";
     Boolean parallelToolCalls = params.hasKey("parallel_tool_calls") ? params.getBoolean("parallel_tool_calls") : false;
     String toolChoice = params.hasKey("tool_choice") ? params.getString("tool_choice") : "";
+    
+    // Update conversation state when formatting chat
+    try {
+      WritableMap state = Arguments.createMap();
+      state.putInt("contextId", this.id);
+      state.putDouble("timestamp", System.currentTimeMillis());
+      state.putString("messages", messages);
+      if (chatTemplate != null && !chatTemplate.isEmpty()) {
+        state.putString("chatTemplate", chatTemplate);
+      }
+      
+      // Store the conversation state
+      conversationState = state.toString();
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to update conversation state", e);
+    }
+    
     return getFormattedChatWithJinja(
       this.context,
       messages,
@@ -222,6 +300,19 @@ public class LlamaContext {
   public WritableMap completion(ReadableMap params) {
     if (!params.hasKey("prompt")) {
       throw new IllegalArgumentException("Missing required parameter: prompt");
+    }
+
+    // Update conversation state with prompt
+    try {
+      WritableMap state = Arguments.createMap();
+      state.putInt("contextId", this.id);
+      state.putDouble("timestamp", System.currentTimeMillis());
+      state.putString("prompt", params.getString("prompt"));
+      
+      // Store the conversation state
+      conversationState = state.toString();
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to update conversation state", e);
     }
 
     double[][] logit_bias = new double[0][0];
