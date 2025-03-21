@@ -189,16 +189,43 @@ public class LlamaContext {
    */
   public boolean restoreConversationState(String state) {
     if (state == null || state.isEmpty()) {
-      Log.d(NAME, "STATE NULL OR EMPTY");
+      Log.d(NAME, "Cannot restore conversation: state is null or empty");
       return false;
     }
     
     try {
       // Store the state
       conversationState = state;
-      Log.d(NAME, "RESTORED CONVERSATION");
-      // Parse state if needed for restoration
-      // For now, we just store it and return success
+      
+      // Try to parse the state to verify it's valid
+      try {
+        org.json.JSONObject jsonState = new org.json.JSONObject(state);
+        int contextId = jsonState.getInt("contextId");
+        long timestamp = jsonState.getLong("timestamp");
+        
+        // Calculate age in hours
+        long ageHours = (System.currentTimeMillis() - timestamp) / (60 * 60 * 1000);
+        
+        Log.d(NAME, "Restored conversation for context " + contextId + 
+              " (age: " + ageHours + " hours, current context: " + this.id + ")");
+        
+        // If the state contains messages, log that too
+        if (jsonState.has("messages")) {
+          Log.d(NAME, "Conversation contains messages data");
+        }
+        
+        if (jsonState.has("session")) {
+          org.json.JSONObject session = jsonState.getJSONObject("session");
+          if (session.has("n_tokens")) {
+            int tokens = session.getInt("n_tokens");
+            Log.d(NAME, "Conversation contains session with " + tokens + " tokens");
+          }
+        }
+      } catch (org.json.JSONException e) {
+        Log.w(NAME, "Conversation state is not valid JSON: " + e.getMessage());
+        // Still return true since we stored the state
+      }
+      
       return true;
     } catch (Exception e) {
       Log.e(NAME, "Failed to restore conversation state", e);

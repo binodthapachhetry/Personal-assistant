@@ -46,6 +46,9 @@ public class RNLlama implements LifecycleEventListener {
   
   // Store saved conversation states by context ID
   private HashMap<Integer, String> savedConversationStates = new HashMap<>();
+  
+  // Track the last used model path for each context ID
+  private HashMap<Integer, String> contextModelPaths = new HashMap<>();
 
   public RNLlama(ReactApplicationContext reactContext) {
     reactContext.addLifecycleEventListener(this);
@@ -299,6 +302,10 @@ public class RNLlama implements LifecycleEventListener {
           if (llamaContextLimit > -1 && contexts.size() >= llamaContextLimit) {
             throw new Exception("Context limit reached");
           }
+          // Store the model path for this context
+          String modelPath = params.getString("model");
+          contextModelPaths.put(contextId, modelPath);
+          
           LlamaContext llamaContext = new LlamaContext(contextId, reactContext, params);
           if (llamaContext.getContext() == 0) {
             throw new Exception("Failed to initialize context");
@@ -312,6 +319,10 @@ public class RNLlama implements LifecycleEventListener {
               boolean restored = llamaContext.restoreConversationState(savedState);
               Log.d(NAME, "Restored saved conversation for context " + contextId + ": " + (restored ? "success" : "failed"));
             }
+          } else {
+            // Try to find a saved conversation for this model path
+            Log.d(NAME, "Looking for saved conversation for model: " + modelPath);
+            findAndRestoreConversationByModelPath(contextId, modelPath, llamaContext);
           }
           
           WritableMap result = Arguments.createMap();
@@ -1063,6 +1074,51 @@ public class RNLlama implements LifecycleEventListener {
   }
   
   /**
+   * Find and restore a conversation by model path
+   */
+  private boolean findAndRestoreConversationByModelPath(int contextId, String modelPath, LlamaContext context) {
+    try {
+      android.content.SharedPreferences prefs = reactContext.getSharedPreferences(
+          "LlamaConversations", android.content.Context.MODE_PRIVATE);
+      
+      // Get all saved model paths
+      android.content.SharedPreferences modelPrefs = reactContext.getSharedPreferences(
+          "LlamaModelPaths", android.content.Context.MODE_PRIVATE);
+      
+      // Look for a conversation that used this model path
+      for (String key : prefs.getAll().keySet()) {
+        if (key.startsWith("conversation_") && !key.contains("timestamp") && !key.contains("model")) {
+          String idStr = key.substring("conversation_".length());
+          int savedContextId = Integer.parseInt(idStr);
+          
+          // Check if this context used the same model
+          String savedModelPath = modelPrefs.getString("model_" + savedContextId, "");
+          if (savedModelPath.equals(modelPath)) {
+            // Found a matching model path
+            String conversationState = prefs.getString(key, null);
+            if (conversationState != null && !conversationState.isEmpty()) {
+              // Restore this conversation state
+              boolean restored = context.restoreConversationState(conversationState);
+              Log.d(NAME, "Restored conversation for matching model path: " + modelPath + 
+                    " (old context: " + savedContextId + ", new context: " + contextId + ")");
+              
+              // Update our in-memory map
+              savedConversationStates.put(contextId, conversationState);
+              return true;
+            }
+          }
+        }
+      }
+      
+      Log.d(NAME, "No saved conversation found for model path: " + modelPath);
+      return false;
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to find conversation by model path", e);
+      return false;
+    }
+  }
+  
+  /**
    * Restore conversations from persistent storage
    */
   private void restoreConversations() {
@@ -1190,6 +1246,17 @@ public class RNLlama implements LifecycleEventListener {
       editor.putString("conversation_" + contextId, conversationState);
       editor.putLong("conversation_timestamp_" + contextId, System.currentTimeMillis());
       editor.apply();
+      
+      // Also save the model path for this context
+      String modelPath = contextModelPaths.get(contextId);
+      if (modelPath != null && !modelPath.isEmpty()) {
+        android.content.SharedPreferences modelPrefs = reactContext.getSharedPreferences(
+            "LlamaModelPaths", android.content.Context.MODE_PRIVATE);
+        android.content.SharedPreferences.Editor modelEditor = modelPrefs.edit();
+        modelEditor.putString("model_" + contextId, modelPath);
+        modelEditor.apply();
+        Log.d(NAME, "Saved model path for context " + contextId + ": " + modelPath);
+      }
       
       Log.d(NAME, "Saved conversation for context " + contextId);
     } catch (Exception e) {
