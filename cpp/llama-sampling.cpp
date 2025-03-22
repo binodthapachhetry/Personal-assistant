@@ -2681,6 +2681,38 @@ static std::vector<text_match> text_search_filter(
 }
 
 // Resource-guided vector search decision
+static bool should_use_vector_search(int battery_level, bool is_charging, float thermal_headroom, size_t available_memory_mb) {
+    // Skip vector search if battery is critically low and not charging
+    if (battery_level < 15 && !is_charging) {
+        return false;
+    }
+    
+    // Use reduced vector search if battery is low but not critical
+    if (battery_level < 20 && !is_charging) {
+        // Only use vector search for high-priority queries
+        return false; // Default to false, caller can override for important queries
+    }
+    
+    // Skip if device is thermally throttled
+    if (thermal_headroom < 0.2f) {
+        return false;
+    }
+    
+    // Skip if memory is severely constrained
+    if (available_memory_mb < 100) {
+        return false;
+    }
+    
+    // Use limited vector search if memory is somewhat constrained
+    if (available_memory_mb < 200) {
+        // Caller should limit vector results
+        return true;
+    }
+    
+    return true;
+}
+
+// Resource-guided vector search decision
 
 // Hybrid search function that combines text and vector search
 static std::vector<search_result> hybrid_search(
@@ -3357,37 +3389,7 @@ static void reduce_embedding_dimension(
     }
 }
 
-// Resource-guided vector search decision
-static bool should_use_vector_search(int battery_level, bool is_charging, float thermal_headroom, size_t available_memory_mb) {
-    // Skip vector search if battery is critically low and not charging
-    if (battery_level < 15 && !is_charging) {
-        return false;
-    }
-    
-    // Use reduced vector search if battery is low but not critical
-    if (battery_level < 20 && !is_charging) {
-        // Only use vector search for high-priority queries
-        return false; // Default to false, caller can override for important queries
-    }
-    
-    // Skip if device is thermally throttled
-    if (thermal_headroom < 0.2f) {
-        return false;
-    }
-    
-    // Skip if memory is severely constrained
-    if (available_memory_mb < 100) {
-        return false;
-    }
-    
-    // Use limited vector search if memory is somewhat constrained
-    if (available_memory_mb < 200) {
-        // Caller should limit vector results
-        return true;
-    }
-    
-    return true;
-}
+
 
 // Determine if embedding generation should be deferred based on device conditions
 static bool should_defer_embedding_generation(int battery_level, bool is_charging, float thermal_headroom) {

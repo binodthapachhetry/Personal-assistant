@@ -6,17 +6,6 @@ import DocumentPicker from 'react-native-document-picker'
 import type { DocumentPickerResponse } from 'react-native-document-picker'
 import { Chat, darkTheme } from '@flyerhq/react-native-chat-ui'
 
-// Create a custom theme by extending the darkTheme
-const customTheme = {
-  ...darkTheme,
-  colors: {
-    ...darkTheme.colors,
-    background: '#f5f5f5', // Change this to your desired background color
-    inputBackground: '#333333', // Change input box background
-    secondary: '#0d010c', // This will change the assistant bubble color
-    primary: '#4A90E2',   // User bubble color - add or modify this line
-  }
-}
 import type { MessageType } from '@flyerhq/react-native-chat-ui'
 import json5 from 'json5'
 import ReactNativeBlobUtil from 'react-native-blob-util'
@@ -29,6 +18,18 @@ import {
   // eslint-disable-next-line import/no-unresolved
 } from 'llama.rn'
 import { Bubble } from './Bubble'
+
+// Create a custom theme by extending the darkTheme
+const customTheme = {
+  ...darkTheme,
+  colors: {
+    ...darkTheme.colors,
+    background: '#f5f5f5', // Change this to your desired background color
+    inputBackground: '#333333', // Change input box background
+    secondary: '#0d010c', // This will change the assistant bubble color
+    primary: '#4A90E2',   // User bubble color - add or modify this line
+  }
+}
 
 // Example: Catch logs from llama.cpp
 toggleNativeLog(true)

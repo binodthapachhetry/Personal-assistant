@@ -46,8 +46,8 @@ public class RNLlama implements LifecycleEventListener {
   
   // Store saved conversation states by context ID
   private HashMap<Integer, String> savedConversationStates = new HashMap<>();
-  
-  // Track the last used model path for each context ID
+
+  // Track the last used model path for each context ID                                                                                 
   private HashMap<Integer, String> contextModelPaths = new HashMap<>();
 
   public RNLlama(ReactApplicationContext reactContext) {
