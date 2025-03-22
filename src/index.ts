@@ -417,6 +417,7 @@ export async function initLlama(
     pooling_type: poolingType,
     lora,
     lora_list: loraList,
+    contextId,
     ...rest
   }: ContextParams,
   onProgress?: (progress: number) => void,
@@ -434,7 +435,8 @@ export async function initLlama(
       scaled: l.scaled,
     }))
 
-  const contextId = contextIdCounter + contextIdRandom()
+  // Use provided contextId or generate a random one
+  const finalContextId = contextId || (contextIdCounter + contextIdRandom())
   contextIdCounter += 1
 
   let removeProgressListener: any = null
@@ -454,7 +456,7 @@ export async function initLlama(
     reasonNoGPU,
     model: modelDetails,
     androidLib,
-  } = await RNLlama.initContext(contextId, {
+  } = await RNLlama.initContext(finalContextId, {
     model: path,
     is_model_asset: !!isModelAsset,
     use_progress_callback: !!onProgress,
@@ -468,7 +470,7 @@ export async function initLlama(
   })
   removeProgressListener?.remove()
   return new LlamaContext({
-    contextId,
+    contextId: finalContextId,
     gpu,
     reasonNoGPU,
     model: modelDetails,
