@@ -549,8 +549,15 @@ export default function App() {
     await getModelInfo(file.uri)
     const msgId = addSystemMessage('Initializing context...')
     const t0 = Date.now()
+
+    // Generate a stable context ID based on the model path                                                                               
+   // This will ensure the same model gets the same context ID between sessions                                                          
+   const modelPath = file.uri                                                                                                            
+   const contextId = generateStableId(modelPath) 
+
     initLlama(
       {
+        contextId: contextId,
         model: file.uri,
         use_mlock: true,
         lora_list: loraFile ? [{ path: loraFile.uri, scaled: 1.0 }] : undefined, // Or lora: loraFile?.uri,
@@ -606,6 +613,19 @@ export default function App() {
         addSystemMessage(`Context initialization failed: ${err.message}`)
       })
   }
+
+  // Add this helper function to generate a stable ID from a string                                                                       
+ const generateStableId = (str: string): number => {                                                                                     
+  // Simple hash function to convert string to a number                                                                                 
+  let hash = 0                                                                                                                          
+  for (let i = 0; i < str.length; i++) {                                                                                                
+    const char = str.charCodeAt(i)                                                                                                      
+    hash = ((hash << 5) - hash) + char                                                                                                  
+    hash = hash & hash // Convert to 32bit integer                                                                                      
+  }                                                                                                                                     
+  // Make sure it's positive and within a reasonable range                                                                              
+  return Math.abs(hash % 100000)                                                                                                        
+  }          
 
   const copyFileIfNeeded = async (
     type = 'model',

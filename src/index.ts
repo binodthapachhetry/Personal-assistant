@@ -86,6 +86,7 @@ export type ContextParams = Omit<
   NativeContextParams,
   'cache_type_k' | 'cache_type_v' | 'pooling_type'
 > & {
+  contextId?: number
   cache_type_k?:
     | 'f16'
     | 'f32'
