@@ -990,6 +990,40 @@ public class RNLlama implements LifecycleEventListener {
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "getLoadedLoraAdapters-" + contextId);
   }
+  
+  public void getConversationState(double id, Promise promise) {
+    try {
+      LlamaContext context = contexts.get((int) id);
+      if (context == null) {
+        promise.reject("CONTEXT_NOT_FOUND", "Context not found: " + id);
+        return;
+      }
+      
+      String state = context.getConversationState();
+      if (state == null || state.isEmpty()) {
+        promise.resolve(null);
+      } else {
+        promise.resolve(state);
+      }
+    } catch (Exception e) {
+      promise.reject("ERROR", "Failed to get conversation state: " + e.getMessage());
+    }
+  }
+
+  public void restoreConversationState(double id, String state, Promise promise) {
+    try {
+      LlamaContext context = contexts.get((int) id);
+      if (context == null) {
+        promise.reject("CONTEXT_NOT_FOUND", "Context not found: " + id);
+        return;
+      }
+      
+      boolean success = context.restoreConversationState(state);
+      promise.resolve(success);
+    } catch (Exception e) {
+      promise.reject("ERROR", "Failed to restore conversation state: " + e.getMessage());
+    }
+  }
 
   public void releaseContext(double id, Promise promise) {
     final int contextId = (int) id;
