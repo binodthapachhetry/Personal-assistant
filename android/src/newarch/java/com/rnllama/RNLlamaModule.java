@@ -118,6 +118,16 @@ public class RNLlamaModule extends NativeRNLlamaSpec {
   }
 
   @ReactMethod
+  public void getConversationState(double id, Promise promise) {
+    rnllama.getConversationState(id, promise);
+  }
+
+  @ReactMethod
+  public void restoreConversationState(double id, String state, Promise promise) {
+    rnllama.restoreConversationState(id, state, promise);
+  }
+
+  @ReactMethod
   public void releaseAllContexts(Promise promise) {
     rnllama.releaseAllContexts(promise);
   }
