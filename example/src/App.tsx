@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'
 import DocumentPicker from 'react-native-document-picker'
 import type { DocumentPickerResponse } from 'react-native-document-picker'
 import { Chat, darkTheme } from '@flyerhq/react-native-chat-ui'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 
 import type { MessageType } from '@flyerhq/react-native-chat-ui'
 import json5 from 'json5'
@@ -145,6 +146,109 @@ export default function App() {
         addSystemMessage(`Context release failed: ${err}`)
       })
   }
+  
+  const saveCurrentConversation = async () => {
+    if (!context) return;
+    
+    try {
+      // First save the session tokens
+      const tokensSaved = await context.saveSession(`${dirs.DocumentDir}/llama-session.bin`);
+      
+      // Then get the conversation state
+      let state = await context.getConversationState();
+      if (!state) {
+        console.log('No conversation state to save');
+        return;
+      }
+      
+      // Parse the state to add messages
+      const stateObj = JSON.parse(state);
+      stateObj.messages = messages
+        .filter(msg => !msg.metadata?.system && msg.type === 'text')
+        .map(msg => ({
+          id: msg.id,
+          author: msg.author.id,
+          text: msg.text,
+          createdAt: msg.createdAt,
+        }));
+      
+      // Save the updated state
+      state = JSON.stringify(stateObj);
+      await context.restoreConversationState(state);
+      await AsyncStorage.setItem('conversation_state', state);
+      addSystemMessage(`Conversation saved! ${tokensSaved} tokens saved.`);
+    } catch (error) {
+      console.error('Failed to save conversation:', error);
+      addSystemMessage(`Failed to save conversation: ${error.message}`);
+    }
+  };
+  
+  const restoreConversation = async () => {
+    if (!context) return false;
+    
+    try {
+      // First check if we have a saved state
+      const savedState = await AsyncStorage.getItem('conversation_state');
+      if (!savedState) {
+        console.log('No saved conversation state found');
+        return false;
+      }
+      
+      // Parse the state
+      const stateObj = JSON.parse(savedState);
+      
+      // Check if this state is for the current context
+      if (stateObj.contextId !== context.id) {
+        console.log('Saved conversation is for a different context');
+        return false;
+      }
+      
+      // Restore the session tokens
+      try {
+        const result = await context.loadSession(`${dirs.DocumentDir}/llama-session.bin`);
+        console.log('Session loaded:', result);
+      } catch (error) {
+        console.error('Failed to load session:', error);
+        // Continue anyway, we can still restore the messages
+      }
+      
+      // Restore the conversation state
+      await context.restoreConversationState(savedState);
+      
+      // Restore the messages if they exist
+      if (stateObj.messages && Array.isArray(stateObj.messages)) {
+        // Clear existing messages except system messages
+        setMessages(messages.filter(msg => msg.metadata?.system));
+        
+        // Add the restored messages
+        stateObj.messages.forEach(msg => {
+          const author = msg.author === systemId ? system : user;
+          const message = {
+            author,
+            createdAt: msg.createdAt,
+            id: msg.id,
+            text: msg.text,
+            type: 'text',
+            metadata: {
+              contextId: context.id,
+              conversationId: conversationIdRef.current,
+              restored: true,
+            },
+          };
+          addMessage(message, true);
+        });
+        
+        addSystemMessage('Conversation restored!');
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('Failed to restore conversation:', error);
+      addSystemMessage(`Failed to restore conversation: ${error.message}`);
+      return false;
+    }
+  };
 
   // Calculate SHA-256 hash of a file
   const calculateFileHash = async (filePath: string): Promise<string> => {
@@ -524,19 +628,14 @@ export default function App() {
       if (messages.length <= 1) { // Only welcome message or empty
         addSystemMessage('Checking for saved conversation...')
         
-        // This will trigger the native code to check for saved conversations
-        context.saveSession(`${dirs.DocumentDir}/dummy_session.bin`)
-          .then(() => {
-            // Wait a moment for any restored messages to appear
-            setTimeout(() => {
-              if (messages.length <= 2) { // Still only welcome + checking message
-                addSystemMessage('No saved conversation found or restoration failed.')
-              }
-            }, 500)
-          })
-          .catch(err => {
-            console.error('Error checking for saved conversation:', err)
-          })
+        restoreConversation().then(restored => {
+          if (!restored) {
+            addSystemMessage('No saved conversation found or restoration failed.')
+          }
+        }).catch(err => {
+          console.error('Error restoring conversation:', err)
+          addSystemMessage('Error restoring conversation: ' + err.message)
+        })
       }
     }
   }, [context])
@@ -826,6 +925,9 @@ export default function App() {
               console.log('Session save failed:', e)
               addSystemMessage(`Session save failed: ${e.message}`)
             })
+          return
+        case '/save-conversation':
+          saveCurrentConversation()
           return
         case '/load-session':
           context

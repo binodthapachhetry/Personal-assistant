@@ -361,6 +361,14 @@ export class LlamaContext {
     return RNLlama.getLoadedLoraAdapters(this.id)
   }
 
+  async getConversationState(): Promise<string | null> {
+    return RNLlama.getConversationState(this.id);
+  }
+
+  async restoreConversationState(state: string): Promise<boolean> {
+    return RNLlama.restoreConversationState(this.id, state);
+  }
+
   async release(): Promise<void> {
     return RNLlama.releaseContext(this.id)
   }

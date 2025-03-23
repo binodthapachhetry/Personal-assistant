@@ -399,6 +399,9 @@ export interface Spec extends TurboModule {
     nr: number,
   ): Promise<string>
 
+  getConversationState(contextId: number): Promise<string | null>
+  restoreConversationState(contextId: number, state: string): Promise<boolean>
+
   applyLoraAdapters(
     contextId: number,
     loraAdapters: Array<{ path: string; scaled?: number }>,
