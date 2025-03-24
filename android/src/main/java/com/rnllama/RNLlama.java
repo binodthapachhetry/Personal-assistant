@@ -1038,6 +1038,30 @@ public class RNLlama implements LifecycleEventListener {
       }
 
       boolean success = context.restoreConversationState(state);
+      
+      // Emit event with success status
+      WritableMap event = Arguments.createMap();
+      event.putInt("contextId", (int) id);
+      event.putBoolean("success", success);
+      
+      // Include messages if restoration was successful
+      if (success) {
+        event.putArray("messages", context.getConversationMessages());
+        
+        // Include timestamp if available
+        try {
+          org.json.JSONObject jsonState = new org.json.JSONObject(state);
+          if (jsonState.has("timestamp")) {
+            event.putDouble("timestamp", jsonState.getDouble("timestamp"));
+          }
+        } catch (org.json.JSONException e) {
+          // Ignore parsing errors
+        }
+      }
+      
+      reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+          .emit("@RNLlama_onConversationRestored", event);
+      
       promise.resolve(success);
     } catch (Exception e) {
       promise.reject("ERROR", "Failed to restore conversation state: " + e.getMessage());
@@ -1437,6 +1461,25 @@ public class RNLlama implements LifecycleEventListener {
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "saveConversation-" + contextId);
+  }
+
+  /**
+   * Check if a conversation is currently being restored
+   */
+  @ReactMethod
+  public void isRestoringConversation(double id, Promise promise) {
+    try {
+      LlamaContext context = contexts.get((int) id);
+      if (context == null) {
+        promise.reject("CONTEXT_NOT_FOUND", "Context not found: " + id);
+        return;
+      }
+      
+      promise.resolve(context.isRestoringConversation());
+    } catch (Exception e) {
+      promise.reject("ERROR", "Failed to check restoration status: " + e.getMessage());
+      return;
+    }
   }
 
   /**

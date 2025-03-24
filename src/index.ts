@@ -87,6 +87,7 @@ export type ConversationRestoredEvent = {
   contextId: number
   messages: RNLlamaOAICompatibleMessage[]
   timestamp?: number
+  success?: boolean
 }
 
 export type ContextParams = Omit<
@@ -389,6 +390,14 @@ export class LlamaContext {
         callback(evt)
       }
     )
+  }
+
+  /**
+   * Check if a conversation is currently being restored
+   * @returns Promise<boolean> True if a restoration is in progress
+   */
+  async isRestoringConversation(): Promise<boolean> {
+    return RNLlama.isRestoringConversation?.(this.id) || false;
   }
 
   async release(): Promise<void> {

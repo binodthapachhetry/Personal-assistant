@@ -476,6 +476,9 @@ public class LlamaContext {
     }
 
     try {
+      // Set restoration flag
+      restoringConversation = true;
+      
       // Store the state
       conversationState = state;
 
@@ -488,7 +491,7 @@ public class LlamaContext {
         // Calculate age in hours
         long ageHours = (System.currentTimeMillis() - timestamp) / (60 * 60 * 1000);
 
-        Log.d(NAME, "Restored conversation for context " + contextId +
+        Log.d(NAME, "Restoring conversation for context " + contextId +
               " (age: " + ageHours + " hours, current context: " + this.id + ")");
 
         // If the state contains messages, log that too
@@ -529,6 +532,7 @@ public class LlamaContext {
                   
                   // Emit event that conversation was restored
                   emitConversationRestored();
+                  return true;
                 } catch (Exception e) {                                                                                                                  
                     Log.e(NAME, "Failed to load session: " + e.getMessage());                                                                            
                     // Delete corrupted session file                                                                                                     
@@ -540,7 +544,11 @@ public class LlamaContext {
                         }                                                                                                                                
                     } catch (Exception ex) {                                                                                                             
                         Log.e(NAME, "Failed to delete corrupted session file", ex);                                                                      
-                    }                                                                                                                                    
+                    }
+                    
+                    // Reset restoration flag on failure
+                    restoringConversation = false;
+                    return false;
                 }   
               } 
             } else {
@@ -548,14 +556,22 @@ public class LlamaContext {
             }
           }
         }
+        
+        // If we got here without returning, we need to emit the event
+        // This handles cases where there's no session to restore
+        emitConversationRestored();
+        return true;
       } catch (org.json.JSONException e) {
         Log.w(NAME, "Conversation state is not valid JSON: " + e.getMessage());
+        // Reset restoration flag
+        restoringConversation = false;
         // Still return true since we stored the state
+        return true;
       }
-
-      return true;
     } catch (Exception e) {
       Log.e(NAME, "Failed to restore conversation state", e);
+      // Reset restoration flag on failure
+      restoringConversation = false;
       return false;
     }
   }
@@ -653,6 +669,16 @@ public class LlamaContext {
     }
   }
 
+  // Flag to track if conversation restoration is in progress
+  private boolean restoringConversation = false;
+  
+  /**
+   * Check if a conversation is currently being restored
+   */
+  public boolean isRestoringConversation() {
+    return restoringConversation;
+  }
+
   private void emitConversationRestored() {
     WritableMap event = Arguments.createMap();
     event.putInt("contextId", LlamaContext.this.id);
@@ -660,6 +686,7 @@ public class LlamaContext {
     
     // Include the messages in the event
     event.putArray("messages", getConversationMessages());
+    event.putBoolean("success", true);
     
     // Include timestamp if available
     try {
@@ -674,6 +701,9 @@ public class LlamaContext {
     }
     
     eventEmitter.emit("@RNLlama_onConversationRestored", event);
+    
+    // Reset restoration flag
+    restoringConversation = false;
   }
 
   private void emitPartialCompletion(WritableMap tokenResult) {
