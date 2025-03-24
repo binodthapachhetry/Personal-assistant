@@ -36,6 +36,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.ReadableMapKeySetIterator;
+import com.facebook.react.modules.core.DeviceEventManagerModule; 
 
 public class RNLlama implements LifecycleEventListener {
   public static final String NAME = "RNLlama";
@@ -78,6 +79,15 @@ public class RNLlama implements LifecycleEventListener {
     // Remove event listeners
     // This method is required by NativeEventEmitter
   }
+
+  @ReactMethod                                                                                                                          
+   public void testEvent(Promise promise) {                                                                                              
+     WritableMap event = Arguments.createMap();                                                                                          
+     event.putString("test", "Hello from Java");                                                                                         
+     reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)                                                      
+         .emit("@RNLlama_testEvent", event);                                                                                             
+     promise.resolve(true);                                                                                                              
+   } 
 
 
   /**
@@ -1058,6 +1068,9 @@ public class RNLlama implements LifecycleEventListener {
           // Ignore parsing errors
         }
       }
+
+      Log.d(NAME, "Event being emitted");
+      Log.d(NAME, event.toString());
       
       reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
           .emit("@RNLlama_onConversationRestored", event);

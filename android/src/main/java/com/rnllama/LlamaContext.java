@@ -704,8 +704,21 @@ public class LlamaContext {
     } catch (org.json.JSONException e) {
       // Ignore parsing errors
     }
-    
-    eventEmitter.emit("@RNLlama_onConversationRestored", event);
+
+
+    if (eventEmitter == null) {                                                                                                           
+     Log.e(NAME, "eventEmitter is null, cannot emit event");                                                                                                                                                                                                         
+    } 
+
+
+    // // In Java                                                                                                                            
+    // WritableMap testEvent = Arguments.createMap();                                                                                        
+    // testEvent.putString("test", "Hello from Java");                                                                                       
+    // eventEmitter.emit("@RNLlama_testEvent", testEvent);
+
+    Log.d(NAME, "About to emit conversation restored event with data: " + event.toString());                                                 
+    eventEmitter.emit("@RNLlama_onConversationRestored", event);                                                                             
+    Log.d(NAME, "Event emitted"); 
     
     // Reset restoration flag
     restoringConversation = false;
