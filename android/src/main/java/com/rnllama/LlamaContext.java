@@ -415,6 +415,57 @@ public class LlamaContext {
   }
 
   /**
+   * Get the structured messages from the current conversation state
+   * @return WritableArray of message objects with role and content
+   */
+  public WritableArray getConversationMessages() {
+    WritableArray messages = Arguments.createArray();
+    
+    if (conversationState == null || conversationState.isEmpty()) {
+      return messages;
+    }
+    
+    try {
+      org.json.JSONObject jsonState = new org.json.JSONObject(conversationState);
+      if (jsonState.has("messages")) {
+        org.json.JSONArray messagesJson = jsonState.getJSONArray("messages");
+        
+        for (int i = 0; i < messagesJson.length(); i++) {
+          org.json.JSONObject msgJson = messagesJson.getJSONObject(i);
+          WritableMap msg = Arguments.createMap();
+          
+          // Copy all properties from the JSON object to the WritableMap
+          java.util.Iterator<String> keys = msgJson.keys();
+          while (keys.hasNext()) {
+            String key = keys.next();
+            Object value = msgJson.get(key);
+            
+            if (value instanceof String) {
+              msg.putString(key, (String) value);
+            } else if (value instanceof Integer) {
+              msg.putInt(key, (Integer) value);
+            } else if (value instanceof Double) {
+              msg.putDouble(key, (Double) value);
+            } else if (value instanceof Boolean) {
+              msg.putBoolean(key, (Boolean) value);
+            }
+          }
+          
+          messages.pushMap(msg);
+        }
+      } else if (jsonState.has("prompt")) {
+        // If we only have a prompt, try to extract messages
+        String prompt = jsonState.getString("prompt");
+        extractMessagesFromPrompt(prompt, messages);
+      }
+    } catch (org.json.JSONException e) {
+      Log.w(NAME, "Could not parse conversation state: " + e.getMessage());
+    }
+    
+    return messages;
+  }
+
+  /**
    * Restore conversation from serialized state
    * @return true if successful
    */
@@ -474,7 +525,10 @@ public class LlamaContext {
                       Log.d(NAME, "Successfully restored session (token count unknown)");                                                              
                   } else {                                                                                                                             
                       Log.w(NAME, "Session loaded but no tokens_loaded in result");                                                                    
-                  }                                                                                                                                    
+                  }
+                  
+                  // Emit event that conversation was restored
+                  emitConversationRestored();
                 } catch (Exception e) {                                                                                                                  
                     Log.e(NAME, "Failed to load session: " + e.getMessage());                                                                            
                     // Delete corrupted session file                                                                                                     
@@ -597,6 +651,28 @@ public class LlamaContext {
     void onLoadProgress(int progress) {
       context.emitLoadProgress(progress);
     }
+  }
+
+  private void emitConversationRestored() {
+    WritableMap event = Arguments.createMap();
+    event.putInt("contextId", LlamaContext.this.id);
+    
+    // Include the messages in the event
+    event.putArray("messages", getConversationMessages());
+    
+    // Include timestamp if available
+    try {
+      if (conversationState != null) {
+        org.json.JSONObject jsonState = new org.json.JSONObject(conversationState);
+        if (jsonState.has("timestamp")) {
+          event.putDouble("timestamp", jsonState.getDouble("timestamp"));
+        }
+      }
+    } catch (org.json.JSONException e) {
+      // Ignore parsing errors
+    }
+    
+    eventEmitter.emit("@RNLlama_onConversationRestored", event);
   }
 
   private void emitPartialCompletion(WritableMap tokenResult) {

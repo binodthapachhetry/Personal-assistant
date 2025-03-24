@@ -66,6 +66,11 @@ public class RNLlama implements LifecycleEventListener {
   public void addListener(String eventName) {
     // Keep track of event listeners
     // This method is required by NativeEventEmitter
+    // Supported events:
+    // - @RNLlama_onToken
+    // - @RNLlama_onInitContextProgress
+    // - @RNLlama_onNativeLog
+    // - @RNLlama_onConversationRestored
   }
 
   @ReactMethod
@@ -320,6 +325,8 @@ public class RNLlama implements LifecycleEventListener {
             if (savedState != null && !savedState.isEmpty()) {
               boolean restored = llamaContext.restoreConversationState(savedState);
               Log.d(NAME, "Restored saved conversation for context " + contextId + ": " + (restored ? "success" : "failed"));
+              
+              // Note: The LlamaContext will emit the onConversationRestored event
             }
           } else {
             // Try to find a saved conversation for this model path
@@ -982,6 +989,25 @@ public class RNLlama implements LifecycleEventListener {
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     tasks.put(task, "getLoadedLoraAdapters-" + contextId);
+  }
+
+  /**
+   * Get the structured messages from the current conversation
+   */
+  @ReactMethod
+  public void getConversationMessages(double id, Promise promise) {
+    try {
+      LlamaContext context = contexts.get((int) id);
+      if (context == null) {
+        promise.reject("CONTEXT_NOT_FOUND", "Context not found: " + id);
+        return;
+      }
+
+      WritableArray messages = context.getConversationMessages();
+      promise.resolve(messages);
+    } catch (Exception e) {
+      promise.reject("ERROR", "Failed to get conversation messages: " + e.getMessage());
+    }
   }
 
   public void getConversationState(double id, Promise promise) {
