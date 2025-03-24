@@ -243,11 +243,62 @@ public class LlamaContext {
     }
     
     try {
+      // Check if this is a special format with header_id tokens
+      if (prompt.contains("<|start_header_id|>") && prompt.contains("<|end_header_id|>")) {
+        // Split by end-of-turn token
+        String[] turns = prompt.split("<\\|eot_id\\|>");
+        
+        for (String turn : turns) {
+          if (turn.trim().isEmpty()) {
+            continue;
+          }
+          
+          // Find the role marker
+          int startHeaderPos = turn.indexOf("<|start_header_id|>");
+          if (startHeaderPos >= 0) {
+            int endHeaderPos = turn.indexOf("<|end_header_id|>");
+            
+            if (endHeaderPos > startHeaderPos) {
+              // Extract the role
+              String role = turn.substring(
+                  startHeaderPos + "<|start_header_id|>".length(),
+                  endHeaderPos
+              ).trim();
+              
+              // Extract the content (everything after end_header_id)
+              String content = turn.substring(endHeaderPos + "<|end_header_id|>".length()).trim();
+              
+              // Create message if we have valid role and content
+              if (!role.isEmpty()) {
+                WritableMap msg = Arguments.createMap();
+                msg.putString("role", role);
+                msg.putString("content", content);
+                messages.pushMap(msg);
+              }
+            }
+          } else {
+            // If there's content before the first header, treat it as system message
+            if (!turn.trim().isEmpty() && messages.size() == 0) {
+              WritableMap msg = Arguments.createMap();
+              msg.putString("role", "system");
+              msg.putString("content", turn.trim());
+              messages.pushMap(msg);
+            }
+          }
+        }
+        
+        // If we successfully extracted messages, return
+        if (messages.size() > 0) {
+          return;
+        }
+      }
+      
+      // Fall back to the existing parsing logic for other formats
       // Common patterns in prompts
-      String[] userMarkers = {"<|start_header_id|>user<|end_header_id|>", "[USER]:", "User:", "Human:"};
-      String[] assistantMarkers = {"<|start_header_id|>assistant<|end_header_id|>", "[ASSISTANT]:", "Assistant:", "AI:"};
-      String[] systemMarkers = {"<|start_header_id|>system<|end_header_id|>", "[SYSTEM]:", "System:"};
-      String[] endMarkers = {"<|eot_id|>", "\n\n"};
+      String[] userMarkers = {"[USER]:", "User:", "Human:"};
+      String[] assistantMarkers = {"[ASSISTANT]:", "Assistant:", "AI:"};
+      String[] systemMarkers = {"[SYSTEM]:", "System:"};
+      String[] endMarkers = {"\n\n"};
       
       // Try to identify if this is a JSON array of messages
       if (prompt.trim().startsWith("[") && prompt.trim().endsWith("]")) {
@@ -353,7 +404,7 @@ public class LlamaContext {
         messages.pushMap(msg);
       }
     } catch (Exception e) {
-      Log.w(NAME, "Failed to extract messages from prompt: " + e.getMessage());
+      Log.w(NAME, "Failed to extract messages from prompt: " + e.getMessage(), e);
       
       // Fallback: treat the whole prompt as a user message
       WritableMap userMsg = Arguments.createMap();
