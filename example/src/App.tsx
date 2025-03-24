@@ -151,10 +151,7 @@ export default function App() {
     if (!context) return;
     
     try {
-      // First save the session tokens
-      const tokensSaved = await context.saveSession(`${dirs.DocumentDir}/llama-session.bin`);
-      
-      // Then get the conversation state
+      // Get the conversation state - this will automatically include session data
       let state = await context.getConversationState();
       if (!state) {
         console.log('No conversation state to save');
@@ -176,6 +173,9 @@ export default function App() {
       state = JSON.stringify(stateObj);
       await context.restoreConversationState(state);
       await AsyncStorage.setItem('conversation_state', state);
+      
+      // Get the number of tokens from the state
+      const tokensSaved = stateObj.session?.n_tokens || 0;
       addSystemMessage(`Conversation saved! ${tokensSaved} tokens saved.`);
     } catch (error) {
       console.error('Failed to save conversation:', error);
@@ -203,17 +203,19 @@ export default function App() {
         return false;
       }
       
-      // Restore the session tokens
-      try {
-        const result = await context.loadSession(`${dirs.DocumentDir}/llama-session.bin`);
-        console.log('Session loaded:', result);
-      } catch (error) {
-        console.error('Failed to load session:', error);
-        // Continue anyway, we can still restore the messages
+      // Restore the conversation state - this will automatically restore the session
+      const success = await context.restoreConversationState(savedState);
+      if (!success) {
+        console.error('Failed to restore conversation state');
+        return false;
       }
       
-      // Restore the conversation state
-      await context.restoreConversationState(savedState);
+      // Log session info if available
+      if (stateObj.session) {
+        console.log('Session info found:', stateObj.session);
+        const tokenCount = stateObj.session.n_tokens || 0;
+        console.log(`Session contains ${tokenCount} tokens`);
+      }
       
       // Restore the messages if they exist
       if (stateObj.messages && Array.isArray(stateObj.messages)) {
@@ -238,7 +240,8 @@ export default function App() {
           addMessage(message, true);
         });
         
-        addSystemMessage('Conversation restored!');
+        const tokenCount = stateObj.session?.n_tokens || 0;
+        addSystemMessage(`Conversation restored with ${tokenCount} tokens!`);
         return true;
       }
       

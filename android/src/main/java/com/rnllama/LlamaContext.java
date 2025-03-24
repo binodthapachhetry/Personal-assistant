@@ -150,42 +150,83 @@ public class LlamaContext {
    * Get the current conversation state as a serialized string
    */
   public String getConversationState() {
-    if (conversationState == null) {
-      // Create conversation state from current context if needed
-      try {
-        WritableMap state = Arguments.createMap();
-        state.putInt("contextId", this.id);
-        state.putDouble("timestamp", System.currentTimeMillis());
+    try {
+      // Always create a fresh state to ensure we have the latest data
+      WritableMap state = Arguments.createMap();
+      state.putInt("contextId", this.id);
+      state.putDouble("timestamp", System.currentTimeMillis());
 
-        // // Get session tokens if available
-        // WritableMap session = saveSession(this.context,
-        //     reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin",
-        //     -1); // -1 means all tokens
-
-        int tokenCount = saveSession(this.context,
-          reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin",
-          -1); // -1 means all tokens
-
-        Log.d(NAME, "TOKEN COUNT:")
-        Log.d(NAME, tokenCount)
-
-        // Create a WritableMap to store the token count
-        WritableMap session = Arguments.createMap();
-        session.putInt("n_tokens", tokenCount);
-
-        if (session != null && session.hasKey("n_tokens")) {
-          state.putMap("session", session);
+      // Save session tokens to a temporary file
+      String tempSessionPath = reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin";
+      int tokenCount = saveSession(this.context, tempSessionPath, -1); // -1 means all tokens
+      
+      Log.d(NAME, "Saved session with " + tokenCount + " tokens");
+      
+      // Create a session info object
+      WritableMap session = Arguments.createMap();
+      session.putInt("n_tokens", tokenCount);
+      session.putString("path", tempSessionPath);
+      
+      // Add session info to state
+      state.putMap("session", session);
+      
+      // If we have an existing state, preserve any messages
+      if (conversationState != null && !conversationState.isEmpty()) {
+        try {
+          org.json.JSONObject existingState = new org.json.JSONObject(conversationState);
+          if (existingState.has("messages")) {
+            // Convert JSONArray to WritableArray
+            org.json.JSONArray messagesJson = existingState.getJSONArray("messages");
+            WritableArray messages = Arguments.createArray();
+            
+            for (int i = 0; i < messagesJson.length(); i++) {
+              org.json.JSONObject msgJson = messagesJson.getJSONObject(i);
+              WritableMap msg = Arguments.createMap();
+              
+              // Copy all properties from the JSON object to the WritableMap
+              java.util.Iterator<String> keys = msgJson.keys();
+              while (keys.hasNext()) {
+                String key = keys.next();
+                Object value = msgJson.get(key);
+                
+                if (value instanceof String) {
+                  msg.putString(key, (String) value);
+                } else if (value instanceof Integer) {
+                  msg.putInt(key, (Integer) value);
+                } else if (value instanceof Double) {
+                  msg.putDouble(key, (Double) value);
+                } else if (value instanceof Boolean) {
+                  msg.putBoolean(key, (Boolean) value);
+                }
+              }
+              
+              messages.pushMap(msg);
+            }
+            
+            state.putArray("messages", messages);
+          }
+          
+          // Preserve other important fields
+          if (existingState.has("prompt")) {
+            state.putString("prompt", existingState.getString("prompt"));
+          }
+          if (existingState.has("chatTemplate")) {
+            state.putString("chatTemplate", existingState.getString("chatTemplate"));
+          }
+        } catch (org.json.JSONException e) {
+          Log.w(NAME, "Could not parse existing conversation state: " + e.getMessage());
         }
-
-        // Convert to JSON string
-        conversationState = state.toString();
-        Log.d(NAME, "CONVERSATION STATE:"+conversationState);
-
-      } catch (Exception e) {
-        Log.e(NAME, "Failed to create conversation state", e);
       }
+
+      // Convert to JSON string
+      conversationState = state.toString();
+      Log.d(NAME, "Created conversation state with session data");
+      
+      return conversationState;
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to create conversation state", e);
+      return conversationState; // Return existing state if we failed to create a new one
     }
-    return conversationState;
   }
 
   /**
@@ -219,12 +260,35 @@ public class LlamaContext {
           Log.d(NAME, "Conversation contains messages data");
         }
 
+        // Restore session if available
         if (jsonState.has("session")) {
           org.json.JSONObject session = jsonState.getJSONObject("session");
-          Log.d(NAME, "STATE HAS SESSION INFO");
-          if (session.has("n_tokens")) {
+          Log.d(NAME, "Found session info in state");
+          
+          if (session.has("n_tokens") && session.has("path")) {
             int tokens = session.getInt("n_tokens");
-            Log.d(NAME, "Conversation contains session with " + tokens + " tokens");
+            String path = session.getString("path");
+            
+            Log.d(NAME, "Attempting to restore session with " + tokens + " tokens from " + path);
+            
+            // Check if the session file exists
+            File sessionFile = new File(path);
+            if (sessionFile.exists()) {
+              try {
+                // Load the session
+                WritableMap loadResult = loadSession(this.context, path);
+                if (loadResult.hasKey("tokens_loaded")) {
+                  int tokensLoaded = loadResult.getInt("tokens_loaded");
+                  Log.d(NAME, "Successfully restored " + tokensLoaded + " tokens from session");
+                } else {
+                  Log.w(NAME, "Session loaded but no tokens_loaded in result");
+                }
+              } catch (Exception e) {
+                Log.e(NAME, "Failed to load session: " + e.getMessage());
+              }
+            } else {
+              Log.w(NAME, "Session file does not exist: " + path);
+            }
           }
         }
       } catch (org.json.JSONException e) {

@@ -97,7 +97,7 @@ public class RNLlama implements LifecycleEventListener {
           new AsyncTask<Void, Void, Void>() {
             @Override
             protected Void doInBackground(Void... voids) {
-              Log.d(NAME, "SAVING ALL CONVERSATIONS PERIODICAUTOSAVE");
+              Log.d(NAME, "Periodic auto-save triggered");
               saveAllConversations();
               return null;
             }
@@ -475,16 +475,7 @@ public class RNLlama implements LifecycleEventListener {
           WritableMap result = context.completion(params);
 
           // Auto-save after completion
-          android.content.SharedPreferences settings = reactContext.getSharedPreferences(
-              "LlamaSettings", android.content.Context.MODE_PRIVATE);
-          boolean autoSaveEnabled = settings.getBoolean("auto_save_enabled", true);
-
-          if (autoSaveEnabled && context.hasConversationState()) {
-            String conversationState = context.getConversationState();
-            if (conversationState != null && !conversationState.isEmpty()) {
-              saveConversationToStorage(contextId, conversationState);
-            }
-          }
+          saveAllConversations(contextId);
 
           return result;
         } catch (Exception e) {
@@ -1105,7 +1096,7 @@ public class RNLlama implements LifecycleEventListener {
   @Override
   public void onHostPause() {
     // Save conversations when app goes to background
-    Log.d(NAME, "SAVING ALL CONVERSATIONS ONHOSTPAUSE");
+    Log.d(NAME, "App paused - saving all conversations");
     saveAllConversations();
   }
 
@@ -1206,7 +1197,7 @@ public class RNLlama implements LifecycleEventListener {
   @Override
   public void onHostDestroy() {
     // Save all active conversations before destroying contexts
-    Log.d(NAME, "SAVING ALL CONVERSATIONS ONHOSTDESTROY");
+    Log.d(NAME, "App destroying - saving all conversations");
 
     saveAllConversations();
 
@@ -1231,43 +1222,7 @@ public class RNLlama implements LifecycleEventListener {
    * Save all active conversations to persistent storage
    */
   private void saveAllConversations() {
-    try {
-      // Check if auto-save is enabled
-      android.content.SharedPreferences settings = reactContext.getSharedPreferences(
-          "LlamaSettings", android.content.Context.MODE_PRIVATE);
-      boolean autoSaveEnabled = settings.getBoolean("auto_save_enabled", true); // Default to true
-
-      Log.d(NAME, "INSIDE SAVE ALL CONVERSATIONS");
-
-      if (!autoSaveEnabled) {
-        Log.d(NAME, "Auto-save is disabled, skipping conversation save");
-        return;
-      }
-
-      Log.d(NAME, "AUTO-SAVE IS NOT DISABLED");
-
-      for (Map.Entry<Integer, LlamaContext> entry : contexts.entrySet()) {
-        int contextId = entry.getKey();
-        LlamaContext context = entry.getValue();
-
-        // Skip if context is not associated with a conversation
-        if (context == null || !context.hasConversationState()) {
-          continue;
-        }
-
-        Log.d(NAME, "CONTEXT IS NOT NULL");
-
-        // Get conversation state from context
-        String conversationState = context.getConversationState();
-        if (conversationState != null && !conversationState.isEmpty()) {
-          // Save to storage
-          Log.d(NAME, "SAVING CONVERSATION TO STORAGE");
-          saveConversationToStorage(contextId, conversationState);
-        }
-      }
-    } catch (Exception e) {
-      Log.e(NAME, "Failed to save conversations", e);
-    }
+    saveAllConversations(null);
   }
 
   /**
@@ -1298,6 +1253,56 @@ public class RNLlama implements LifecycleEventListener {
       Log.d(NAME, "Saved conversation for context " + contextId);
     } catch (Exception e) {
       Log.e(NAME, "Failed to save conversation for context " + contextId, e);
+    }
+  }
+  
+  /**
+   * Save all conversations or a specific one if contextId is provided
+   */
+  private void saveAllConversations(Integer specificContextId) {
+    try {
+      // Check if auto-save is enabled
+      android.content.SharedPreferences settings = reactContext.getSharedPreferences(
+          "LlamaSettings", android.content.Context.MODE_PRIVATE);
+      boolean autoSaveEnabled = settings.getBoolean("auto_save_enabled", true); // Default to true
+
+      if (!autoSaveEnabled) {
+        Log.d(NAME, "Auto-save is disabled, skipping conversation save");
+        return;
+      }
+
+      if (specificContextId != null) {
+        // Save only the specified context
+        LlamaContext context = contexts.get(specificContextId);
+        if (context != null && context.hasConversationState()) {
+          String conversationState = context.getConversationState();
+          if (conversationState != null && !conversationState.isEmpty()) {
+            saveConversationToStorage(specificContextId, conversationState);
+            Log.d(NAME, "Saved specific conversation for context " + specificContextId);
+          }
+        }
+      } else {
+        // Save all contexts
+        Log.d(NAME, "Saving all conversations");
+        for (Map.Entry<Integer, LlamaContext> entry : contexts.entrySet()) {
+          int contextId = entry.getKey();
+          LlamaContext context = entry.getValue();
+
+          // Skip if context is not associated with a conversation
+          if (context == null || !context.hasConversationState()) {
+            continue;
+          }
+
+          // Get conversation state from context
+          String conversationState = context.getConversationState();
+          if (conversationState != null && !conversationState.isEmpty()) {
+            // Save to storage
+            saveConversationToStorage(contextId, conversationState);
+          }
+        }
+      }
+    } catch (Exception e) {
+      Log.e(NAME, "Failed to save conversations", e);
     }
   }
 
@@ -1348,8 +1353,8 @@ public class RNLlama implements LifecycleEventListener {
 
             result.putString("path", storagePath);
           } else {
-            // Save to SharedPreferences
-            saveConversationToStorage(contextId, conversationState);
+            // Use the consistent save method
+            saveAllConversations(contextId);
           }
 
           result.putBoolean("success", true);
