@@ -237,7 +237,7 @@ public class LlamaContext {
   /**
    * Extract structured messages from a raw prompt string
    */
-  private void extractMessagesFromPrompt(String prompt, WritableArray messages) {
+  public void extractMessagesFromPrompt(String prompt, WritableArray messages) {
     if (prompt == null || prompt.isEmpty()) {
       return;
     }
@@ -408,22 +408,39 @@ public class LlamaContext {
             // Check if the session file exists
             File sessionFile = new File(path);
             if (sessionFile.exists()) {
-              try {
-                // Load the session
-                WritableMap loadResult = loadSession(this.context, path);
-                if (loadResult.hasKey("tokens_loaded")) {
-                  int tokensLoaded = loadResult.getInt("tokens_loaded");
-                  Log.d(NAME, "Successfully restored " + tokensLoaded + " tokens from session");
-                } else {
-                  Log.w(NAME, "Session loaded but no tokens_loaded in result");
-                }
-              } catch (Exception e) {
-                Log.e(NAME, "Failed to load session: " + e.getMessage());
-              }
-            } else {
-              Log.w(NAME, "Session file does not exist: " + path);
-            }
-          }
+              long fileSize = sessionFile.length();                                                                                                
+              if (fileSize < 100) { // Arbitrary small size that's definitely too small                                                            
+                  Log.w(NAME, "Session file is too small (" + fileSize + " bytes), likely corrupted");                                             
+                  sessionFile.delete();                                                                                                            
+              } else { 
+                    try {                                                                                                                                    
+                      // Load the session                                                                                                                  
+                      WritableMap loadResult = loadSession(this.context, path);                                                                            
+                      if (loadResult.hasKey("tokens_loaded")) {                                                                                            
+                          int tokensLoaded = loadResult.getInt("tokens_loaded");                                                                           
+                          Log.d(NAME, "Successfully restored " + tokensLoaded + " tokens from session");                                                   
+                      } else if (loadResult.hasKey("success") && loadResult.getBoolean("success")) {                                                       
+                          Log.d(NAME, "Successfully restored session (token count unknown)");                                                              
+                      } else {                                                                                                                             
+                          Log.w(NAME, "Session loaded but no tokens_loaded in result");                                                                    
+                      }                                                                                                                                    
+                    } catch (Exception e) {                                                                                                                  
+                        Log.e(NAME, "Failed to load session: " + e.getMessage());                                                                            
+                        // Delete corrupted session file                                                                                                     
+                        try {                                                                                                                                
+                            File sessionFile = new File(path);                                                                                               
+                            if (sessionFile.exists()) {                                                                                                      
+                                boolean deleted = sessionFile.delete();                                                                                      
+                                Log.d(NAME, "Deleted corrupted session file: " + deleted);                                                                   
+                            }                                                                                                                                
+                        } catch (Exception ex) {                                                                                                             
+                            Log.e(NAME, "Failed to delete corrupted session file", ex);                                                                      
+                        }                                                                                                                                    
+                    }   
+                  } 
+          
+            }else {
+                    Log.w(NAME, "Session file does not exist: " + path);
         }
       } catch (org.json.JSONException e) {
         Log.w(NAME, "Conversation state is not valid JSON: " + e.getMessage());
