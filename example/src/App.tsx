@@ -627,7 +627,38 @@ export default function App() {
   // Check for restored conversation when context is loaded
   useEffect(() => {
     if (context) {
-      // If we have a context but no messages, check if there's a restored conversation
+      // Listen for conversation restored events
+      const subscription = context.onConversationRestored((event) => {
+        console.log('Conversation restored event received:', event);
+        
+        if (event.messages && event.messages.length > 0) {
+          // Clear existing messages except system messages
+          setMessages(msgs => msgs.filter(msg => msg.metadata?.system));
+          
+          // Add the restored messages
+          event.messages.forEach(msg => {
+            const author = msg.role === 'assistant' ? system : user;
+            const message = {
+              author,
+              createdAt: msg.createdAt || Date.now(),
+              id: msg.id || randId(),
+              text: msg.content,
+              type: 'text',
+              metadata: {
+                contextId: context.id,
+                conversationId: conversationIdRef.current,
+                restored: true,
+              },
+            };
+            addMessage(message, true);
+          });
+          
+          const tokenCount = event.tokenCount || 0;
+          addSystemMessage(`Conversation restored with ${tokenCount} tokens!`);
+        }
+      });
+      
+      // If we have a context but no messages, check if there's a saved conversation
       if (messages.length <= 1) { // Only welcome message or empty
         addSystemMessage('Checking for saved conversation...')
         
@@ -640,6 +671,9 @@ export default function App() {
           addSystemMessage('Error restoring conversation: ' + err.message)
         })
       }
+      
+      // Clean up listener when component unmounts or context changes
+      return () => subscription.remove();
     }
   }, [context])
 

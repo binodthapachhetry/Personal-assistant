@@ -695,6 +695,11 @@ public class LlamaContext {
         if (jsonState.has("timestamp")) {
           event.putDouble("timestamp", jsonState.getDouble("timestamp"));
         }
+        
+        // Include token count if available
+        if (jsonState.has("session") && jsonState.getJSONObject("session").has("n_tokens")) {
+          event.putInt("tokenCount", jsonState.getJSONObject("session").getInt("n_tokens"));
+        }
       }
     } catch (org.json.JSONException e) {
       // Ignore parsing errors

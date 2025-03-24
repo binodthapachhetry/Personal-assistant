@@ -88,6 +88,7 @@ export type ConversationRestoredEvent = {
   messages: RNLlamaOAICompatibleMessage[]
   timestamp?: number
   success?: boolean
+  tokenCount?: number
 }
 
 export type ContextParams = Omit<
