@@ -1464,6 +1464,59 @@ public class RNLlama implements LifecycleEventListener {
           }
 
           if (conversationState != null && !conversationState.isEmpty()) {
+            // Try to parse the conversation state to check if it has messages
+            try {
+              org.json.JSONObject jsonState = new org.json.JSONObject(conversationState);
+              if (!jsonState.has("messages") && jsonState.has("prompt")) {
+                // Legacy format with only prompt - convert to structured format
+                String prompt = jsonState.getString("prompt");
+                
+                // Create a new state with structured messages
+                org.json.JSONObject newState = new org.json.JSONObject(conversationState);
+                org.json.JSONArray messagesArray = new org.json.JSONArray();
+                
+                // Extract messages from prompt
+                WritableArray extractedMessages = Arguments.createArray();
+                context.extractMessagesFromPrompt(prompt, extractedMessages);
+                
+                // Convert WritableArray to JSONArray
+                for (int i = 0; i < extractedMessages.size(); i++) {
+                  ReadableMap msg = extractedMessages.getMap(i);
+                  org.json.JSONObject jsonMsg = new org.json.JSONObject();
+                  
+                  ReadableMapKeySetIterator iterator = msg.keySetIterator();
+                  while (iterator.hasNextKey()) {
+                    String key = iterator.nextKey();
+                    switch (msg.getType(key)) {
+                      case String:
+                        jsonMsg.put(key, msg.getString(key));
+                        break;
+                      case Number:
+                        jsonMsg.put(key, msg.getDouble(key));
+                        break;
+                      case Boolean:
+                        jsonMsg.put(key, msg.getBoolean(key));
+                        break;
+                      default:
+                        // Skip other types
+                        break;
+                    }
+                  }
+                  
+                  messagesArray.put(jsonMsg);
+                }
+                
+                // Add messages to the new state
+                newState.put("messages", messagesArray);
+                
+                // Use the new state
+                conversationState = newState.toString();
+                result.putBoolean("converted", true);
+              }
+            } catch (org.json.JSONException e) {
+              Log.w(NAME, "Could not parse conversation state: " + e.getMessage());
+            }
+            
             // Restore conversation state
             boolean restored = context.restoreConversationState(conversationState);
             result.putBoolean("success", restored);
