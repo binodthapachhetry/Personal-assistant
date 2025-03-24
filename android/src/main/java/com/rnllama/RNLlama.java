@@ -1333,6 +1333,40 @@ public class RNLlama implements LifecycleEventListener {
             return result;
           }
 
+          // Add metadata about the conversation structure
+          try {
+            org.json.JSONObject jsonState = new org.json.JSONObject(conversationState);
+            if (jsonState.has("messages")) {
+              org.json.JSONArray messages = jsonState.getJSONArray("messages");
+              result.putInt("messageCount", messages.length());
+              
+              // Count messages by role
+              int userCount = 0;
+              int assistantCount = 0;
+              int systemCount = 0;
+              
+              for (int i = 0; i < messages.length(); i++) {
+                org.json.JSONObject msg = messages.getJSONObject(i);
+                if (msg.has("role")) {
+                  String role = msg.getString("role");
+                  if ("user".equals(role)) {
+                    userCount++;
+                  } else if ("assistant".equals(role)) {
+                    assistantCount++;
+                  } else if ("system".equals(role)) {
+                    systemCount++;
+                  }
+                }
+              }
+              
+              result.putInt("userMessageCount", userCount);
+              result.putInt("assistantMessageCount", assistantCount);
+              result.putInt("systemMessageCount", systemCount);
+            }
+          } catch (org.json.JSONException e) {
+            Log.w(NAME, "Could not parse conversation state: " + e.getMessage());
+          }
+
           // Get storage path if provided
           String storagePath = null;
           if (params != null && params.hasKey("path")) {

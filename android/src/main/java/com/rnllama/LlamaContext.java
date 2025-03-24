@@ -170,14 +170,16 @@ public class LlamaContext {
       // Add session info to state
       state.putMap("session", session);
       
-      // If we have an existing state, preserve any messages
+      // If we have an existing state, preserve messages
+      WritableArray messages = Arguments.createArray();
+      
       if (conversationState != null && !conversationState.isEmpty()) {
         try {
           org.json.JSONObject existingState = new org.json.JSONObject(conversationState);
+          
+          // If we already have structured messages, use them
           if (existingState.has("messages")) {
-            // Convert JSONArray to WritableArray
             org.json.JSONArray messagesJson = existingState.getJSONArray("messages");
-            WritableArray messages = Arguments.createArray();
             
             for (int i = 0; i < messagesJson.length(); i++) {
               org.json.JSONObject msgJson = messagesJson.getJSONObject(i);
@@ -202,14 +204,14 @@ public class LlamaContext {
               
               messages.pushMap(msg);
             }
-            
-            state.putArray("messages", messages);
+          } 
+          // If we have a prompt but no structured messages, try to extract messages from prompt
+          else if (existingState.has("prompt")) {
+            String prompt = existingState.getString("prompt");
+            extractMessagesFromPrompt(prompt, messages);
           }
           
-          // Preserve other important fields
-          if (existingState.has("prompt")) {
-            state.putString("prompt", existingState.getString("prompt"));
-          }
+          // Preserve chat template if it exists
           if (existingState.has("chatTemplate")) {
             state.putString("chatTemplate", existingState.getString("chatTemplate"));
           }
@@ -217,6 +219,9 @@ public class LlamaContext {
           Log.w(NAME, "Could not parse existing conversation state: " + e.getMessage());
         }
       }
+      
+      // Always add messages array to state, even if empty
+      state.putArray("messages", messages);
 
       // Convert to JSON string
       conversationState = state.toString();
@@ -226,6 +231,135 @@ public class LlamaContext {
     } catch (Exception e) {
       Log.e(NAME, "Failed to create conversation state", e);
       return conversationState; // Return existing state if we failed to create a new one
+    }
+  }
+  
+  /**
+   * Extract structured messages from a raw prompt string
+   */
+  private void extractMessagesFromPrompt(String prompt, WritableArray messages) {
+    if (prompt == null || prompt.isEmpty()) {
+      return;
+    }
+    
+    try {
+      // Common patterns in prompts
+      String[] userMarkers = {"<|start_header_id|>user<|end_header_id|>", "[USER]:", "User:", "Human:"};
+      String[] assistantMarkers = {"<|start_header_id|>assistant<|end_header_id|>", "[ASSISTANT]:", "Assistant:", "AI:"};
+      String[] systemMarkers = {"<|start_header_id|>system<|end_header_id|>", "[SYSTEM]:", "System:"};
+      String[] endMarkers = {"<|eot_id|>", "\n\n"};
+      
+      // Try to identify if this is a JSON array of messages
+      if (prompt.trim().startsWith("[") && prompt.trim().endsWith("]")) {
+        try {
+          org.json.JSONArray jsonArray = new org.json.JSONArray(prompt);
+          for (int i = 0; i < jsonArray.length(); i++) {
+            org.json.JSONObject msgJson = jsonArray.getJSONObject(i);
+            WritableMap msg = Arguments.createMap();
+            
+            if (msgJson.has("role") && msgJson.has("content")) {
+              msg.putString("role", msgJson.getString("role"));
+              msg.putString("content", msgJson.getString("content"));
+              messages.pushMap(msg);
+            }
+          }
+          return; // Successfully parsed JSON array
+        } catch (org.json.JSONException e) {
+          // Not valid JSON, continue with other parsing methods
+        }
+      }
+      
+      // Split the prompt into chunks based on markers
+      java.util.List<String> chunks = new java.util.ArrayList<>();
+      java.util.List<String> roles = new java.util.ArrayList<>();
+      
+      int lastIndex = 0;
+      String currentRole = null;
+      
+      // Find all user markers
+      for (String marker : userMarkers) {
+        int index = prompt.indexOf(marker, lastIndex);
+        while (index != -1) {
+          if (currentRole != null && lastIndex < index) {
+            chunks.add(prompt.substring(lastIndex, index));
+            roles.add(currentRole);
+          }
+          lastIndex = index + marker.length();
+          currentRole = "user";
+          index = prompt.indexOf(marker, lastIndex);
+        }
+      }
+      
+      // Find all assistant markers
+      for (String marker : assistantMarkers) {
+        int index = prompt.indexOf(marker, lastIndex);
+        while (index != -1) {
+          if (currentRole != null && lastIndex < index) {
+            chunks.add(prompt.substring(lastIndex, index));
+            roles.add(currentRole);
+          }
+          lastIndex = index + marker.length();
+          currentRole = "assistant";
+          index = prompt.indexOf(marker, lastIndex);
+        }
+      }
+      
+      // Find all system markers
+      for (String marker : systemMarkers) {
+        int index = prompt.indexOf(marker, lastIndex);
+        while (index != -1) {
+          if (currentRole != null && lastIndex < index) {
+            chunks.add(prompt.substring(lastIndex, index));
+            roles.add(currentRole);
+          }
+          lastIndex = index + marker.length();
+          currentRole = "system";
+          index = prompt.indexOf(marker, lastIndex);
+        }
+      }
+      
+      // Add the last chunk
+      if (currentRole != null && lastIndex < prompt.length()) {
+        chunks.add(prompt.substring(lastIndex));
+        roles.add(currentRole);
+      }
+      
+      // If we couldn't identify any structured messages, treat the whole prompt as a user message
+      if (chunks.isEmpty()) {
+        WritableMap userMsg = Arguments.createMap();
+        userMsg.putString("role", "user");
+        userMsg.putString("content", prompt);
+        messages.pushMap(userMsg);
+        return;
+      }
+      
+      // Process the chunks into messages
+      for (int i = 0; i < chunks.size(); i++) {
+        String content = chunks.get(i);
+        String role = roles.get(i);
+        
+        // Clean up content by removing end markers
+        for (String marker : endMarkers) {
+          content = content.replace(marker, "");
+        }
+        
+        // Trim whitespace
+        content = content.trim();
+        
+        // Create message
+        WritableMap msg = Arguments.createMap();
+        msg.putString("role", role);
+        msg.putString("content", content);
+        messages.pushMap(msg);
+      }
+    } catch (Exception e) {
+      Log.w(NAME, "Failed to extract messages from prompt: " + e.getMessage());
+      
+      // Fallback: treat the whole prompt as a user message
+      WritableMap userMsg = Arguments.createMap();
+      userMsg.putString("role", "user");
+      userMsg.putString("content", prompt);
+      messages.pushMap(userMsg);
     }
   }
 
@@ -311,12 +445,49 @@ public class LlamaContext {
 
     // Update conversation state when formatting chat
     try {
+      // Parse the messages string to extract structured messages
       WritableMap state = Arguments.createMap();
       state.putInt("contextId", this.id);
       state.putDouble("timestamp", System.currentTimeMillis());
-      state.putString("messages", messages);
+      
+      // Store the raw messages string for backward compatibility
       if (chatTemplate != null && !chatTemplate.isEmpty()) {
         state.putString("chatTemplate", chatTemplate);
+      }
+      
+      // Try to parse messages as JSON array
+      WritableArray messagesArray = Arguments.createArray();
+      try {
+        org.json.JSONArray jsonArray = new org.json.JSONArray(messages);
+        for (int i = 0; i < jsonArray.length(); i++) {
+          org.json.JSONObject msgJson = jsonArray.getJSONObject(i);
+          WritableMap msg = Arguments.createMap();
+          
+          // Copy all properties from the JSON object to the WritableMap
+          java.util.Iterator<String> keys = msgJson.keys();
+          while (keys.hasNext()) {
+            String key = keys.next();
+            Object value = msgJson.get(key);
+            
+            if (value instanceof String) {
+              msg.putString(key, (String) value);
+            } else if (value instanceof Integer) {
+              msg.putInt(key, (Integer) value);
+            } else if (value instanceof Double) {
+              msg.putDouble(key, (Double) value);
+            } else if (value instanceof Boolean) {
+              msg.putBoolean(key, (Boolean) value);
+            }
+          }
+          
+          messagesArray.pushMap(msg);
+        }
+        state.putArray("messages", messagesArray);
+      } catch (org.json.JSONException e) {
+        // If not valid JSON array, store as raw string and extract messages
+        state.putString("rawMessages", messages);
+        extractMessagesFromPrompt(messages, messagesArray);
+        state.putArray("messages", messagesArray);
       }
 
       // Store the conversation state
@@ -406,7 +577,122 @@ public class LlamaContext {
       WritableMap state = Arguments.createMap();
       state.putInt("contextId", this.id);
       state.putDouble("timestamp", System.currentTimeMillis());
-      state.putString("prompt", params.getString("prompt"));
+      
+      // Get the prompt
+      String prompt = params.getString("prompt");
+      
+      // Extract structured messages from the prompt
+      WritableArray messagesArray = Arguments.createArray();
+      extractMessagesFromPrompt(prompt, messagesArray);
+      
+      // If we have an existing state, try to merge messages
+      if (conversationState != null && !conversationState.isEmpty()) {
+        try {
+          org.json.JSONObject existingState = new org.json.JSONObject(conversationState);
+          if (existingState.has("messages")) {
+            org.json.JSONArray existingMessages = existingState.getJSONArray("messages");
+            
+            // If the prompt is likely a continuation, append it to the last message
+            // or add it as a new message
+            if (messagesArray.size() == 1 && 
+                existingMessages.length() > 0 && 
+                prompt.length() < 200) { // Heuristic for a short continuation
+              
+              org.json.JSONObject lastMessage = existingMessages.getJSONObject(existingMessages.length() - 1);
+              String lastRole = lastMessage.getString("role");
+              
+              // If the last message was from the user, this is likely a continuation
+              if ("user".equals(lastRole)) {
+                WritableArray mergedMessages = Arguments.createArray();
+                
+                // Copy all existing messages except the last one
+                for (int i = 0; i < existingMessages.length() - 1; i++) {
+                  org.json.JSONObject msgJson = existingMessages.getJSONObject(i);
+                  WritableMap msg = Arguments.createMap();
+                  
+                  java.util.Iterator<String> keys = msgJson.keys();
+                  while (keys.hasNext()) {
+                    String key = keys.next();
+                    Object value = msgJson.get(key);
+                    
+                    if (value instanceof String) {
+                      msg.putString(key, (String) value);
+                    } else if (value instanceof Integer) {
+                      msg.putInt(key, (Integer) value);
+                    } else if (value instanceof Double) {
+                      msg.putDouble(key, (Double) value);
+                    } else if (value instanceof Boolean) {
+                      msg.putBoolean(key, (Boolean) value);
+                    }
+                  }
+                  
+                  mergedMessages.pushMap(msg);
+                }
+                
+                // Merge the last message with the new prompt
+                WritableMap mergedLastMessage = Arguments.createMap();
+                mergedLastMessage.putString("role", "user");
+                mergedLastMessage.putString("content", 
+                    lastMessage.getString("content") + "\n" + 
+                    messagesArray.getMap(0).getString("content"));
+                mergedMessages.pushMap(mergedLastMessage);
+                
+                // Use the merged messages
+                messagesArray = mergedMessages;
+              } else {
+                // If the last message was from the assistant, add the new message
+                WritableArray combinedMessages = Arguments.createArray();
+                
+                // Copy all existing messages
+                for (int i = 0; i < existingMessages.length(); i++) {
+                  org.json.JSONObject msgJson = existingMessages.getJSONObject(i);
+                  WritableMap msg = Arguments.createMap();
+                  
+                  java.util.Iterator<String> keys = msgJson.keys();
+                  while (keys.hasNext()) {
+                    String key = keys.next();
+                    Object value = msgJson.get(key);
+                    
+                    if (value instanceof String) {
+                      msg.putString(key, (String) value);
+                    } else if (value instanceof Integer) {
+                      msg.putInt(key, (Integer) value);
+                    } else if (value instanceof Double) {
+                      msg.putDouble(key, (Double) value);
+                    } else if (value instanceof Boolean) {
+                      msg.putBoolean(key, (Boolean) value);
+                    }
+                  }
+                  
+                  combinedMessages.pushMap(msg);
+                }
+                
+                // Add the new message
+                combinedMessages.pushMap(messagesArray.getMap(0));
+                
+                // Use the combined messages
+                messagesArray = combinedMessages;
+              }
+            } else {
+              // For more complex cases, just use the newly extracted messages
+              // This could be improved with more sophisticated merging logic
+            }
+          }
+          
+          // Preserve chat template if it exists
+          if (existingState.has("chatTemplate")) {
+            state.putString("chatTemplate", existingState.getString("chatTemplate"));
+          }
+        } catch (org.json.JSONException e) {
+          Log.w(NAME, "Could not parse existing conversation state: " + e.getMessage());
+        }
+      }
+      
+      // Store the structured messages
+      state.putArray("messages", messagesArray);
+      
+      // Store the raw prompt for backward compatibility
+      state.putString("prompt", prompt);
 
       // Store the conversation state
       conversationState = state.toString();
