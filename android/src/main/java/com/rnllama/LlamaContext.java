@@ -656,9 +656,11 @@ public class LlamaContext {
   private void emitConversationRestored() {
     WritableMap event = Arguments.createMap();
     event.putInt("contextId", LlamaContext.this.id);
+    Log.d(NAME, event)
     
     // Include the messages in the event
     event.putArray("messages", getConversationMessages());
+    Log.d(NAME, event)
     
     // Include timestamp if available
     try {
@@ -671,6 +673,7 @@ public class LlamaContext {
     } catch (org.json.JSONException e) {
       // Ignore parsing errors
     }
+    Log.d(NAME, event)
     
     eventEmitter.emit("@RNLlama_onConversationRestored", event);
   }
