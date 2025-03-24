@@ -135,17 +135,17 @@ public class LlamaContext {
   public String getLoadedLibrary() {
     return loadedLibrary;
   }
-  
+
   // Conversation state management
   private String conversationState = null;
-  
+
   /**
    * Check if this context has conversation state
    */
   public boolean hasConversationState() {
     return conversationState != null && !conversationState.isEmpty();
   }
-  
+
   /**
    * Get the current conversation state as a serialized string
    */
@@ -156,33 +156,38 @@ public class LlamaContext {
         WritableMap state = Arguments.createMap();
         state.putInt("contextId", this.id);
         state.putDouble("timestamp", System.currentTimeMillis());
-        
+
         // // Get session tokens if available
-        // WritableMap session = saveSession(this.context, 
-        //     reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin", 
+        // WritableMap session = saveSession(this.context,
+        //     reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin",
         //     -1); // -1 means all tokens
 
         int tokenCount = saveSession(this.context,
-          reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin", 
+          reactContext.getCacheDir() + "/temp_session_" + this.id + ".bin",
           -1); // -1 means all tokens
-        
-        // Create a WritableMap to store the token count                                                                                        
+
+        Log.d(NAME, "TOKEN COUNT:")
+        Log.d(NAME, tokenCount)
+
+        // Create a WritableMap to store the token count
         WritableMap session = Arguments.createMap();
         session.putInt("n_tokens", tokenCount);
-        
+
         if (session != null && session.hasKey("n_tokens")) {
           state.putMap("session", session);
         }
-        
+
         // Convert to JSON string
         conversationState = state.toString();
+        Log.d(NAME, "CONVERSATION STATE:"+conversationState);
+
       } catch (Exception e) {
         Log.e(NAME, "Failed to create conversation state", e);
       }
     }
     return conversationState;
   }
-  
+
   /**
    * Restore conversation from serialized state
    * @return true if successful
@@ -192,30 +197,31 @@ public class LlamaContext {
       Log.d(NAME, "Cannot restore conversation: state is null or empty");
       return false;
     }
-    
+
     try {
       // Store the state
       conversationState = state;
-      
+
       // Try to parse the state to verify it's valid
       try {
         org.json.JSONObject jsonState = new org.json.JSONObject(state);
         int contextId = jsonState.getInt("contextId");
         long timestamp = jsonState.getLong("timestamp");
-        
+
         // Calculate age in hours
         long ageHours = (System.currentTimeMillis() - timestamp) / (60 * 60 * 1000);
-        
-        Log.d(NAME, "Restored conversation for context " + contextId + 
+
+        Log.d(NAME, "Restored conversation for context " + contextId +
               " (age: " + ageHours + " hours, current context: " + this.id + ")");
-        
+
         // If the state contains messages, log that too
         if (jsonState.has("messages")) {
           Log.d(NAME, "Conversation contains messages data");
         }
-        
+
         if (jsonState.has("session")) {
           org.json.JSONObject session = jsonState.getJSONObject("session");
+          Log.d(NAME, "STATE HAS SESSION INFO");
           if (session.has("n_tokens")) {
             int tokens = session.getInt("n_tokens");
             Log.d(NAME, "Conversation contains session with " + tokens + " tokens");
@@ -225,7 +231,7 @@ public class LlamaContext {
         Log.w(NAME, "Conversation state is not valid JSON: " + e.getMessage());
         // Still return true since we stored the state
       }
-      
+
       return true;
     } catch (Exception e) {
       Log.e(NAME, "Failed to restore conversation state", e);
@@ -238,7 +244,7 @@ public class LlamaContext {
     String tools = params.hasKey("tools") ? params.getString("tools") : "";
     Boolean parallelToolCalls = params.hasKey("parallel_tool_calls") ? params.getBoolean("parallel_tool_calls") : false;
     String toolChoice = params.hasKey("tool_choice") ? params.getString("tool_choice") : "";
-    
+
     // Update conversation state when formatting chat
     try {
       WritableMap state = Arguments.createMap();
@@ -248,13 +254,13 @@ public class LlamaContext {
       if (chatTemplate != null && !chatTemplate.isEmpty()) {
         state.putString("chatTemplate", chatTemplate);
       }
-      
+
       // Store the conversation state
       conversationState = state.toString();
     } catch (Exception e) {
       Log.e(NAME, "Failed to update conversation state", e);
     }
-    
+
     return getFormattedChatWithJinja(
       this.context,
       messages,
@@ -326,12 +332,7 @@ public class LlamaContext {
     return result;
   }
 
-  public int saveSession(String path, int size) {
-    if (path == null || path.isEmpty()) {
-      throw new IllegalArgumentException("File path is empty");
-    }
-    return saveSession(this.context, path, size);
-  }
+S
 
   public WritableMap completion(ReadableMap params) {
     if (!params.hasKey("prompt")) {
@@ -344,7 +345,7 @@ public class LlamaContext {
       state.putInt("contextId", this.id);
       state.putDouble("timestamp", System.currentTimeMillis());
       state.putString("prompt", params.getString("prompt"));
-      
+
       // Store the conversation state
       conversationState = state.toString();
     } catch (Exception e) {

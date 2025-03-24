@@ -233,6 +233,7 @@
   },
   "packageManager": "yarn@1.22.22",
   "dependencies": {
+    "@react-native-async-storage/async-storage": "^2.1.2",
     "crypto-js": "^4.2.0"
   }
 }
