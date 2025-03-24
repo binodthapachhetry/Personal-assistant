@@ -396,8 +396,6 @@ public class LlamaContext {
     return result;
   }
 
-S
-
   public WritableMap completion(ReadableMap params) {
     if (!params.hasKey("prompt")) {
       throw new IllegalArgumentException("Missing required parameter: prompt");

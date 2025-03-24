@@ -436,7 +436,7 @@ public class RNLlama implements LifecycleEventListener {
           if (context == null) {
             throw new Exception("Context not found");
           }
-          Integer count = context.saveSession(path, (int) size);
+          Integer count = context.saveSession(context.getContext(), path, (int) size);
           return count;
         } catch (Exception e) {
           exception = e;
