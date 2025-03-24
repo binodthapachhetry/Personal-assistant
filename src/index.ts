@@ -49,6 +49,7 @@ export { SchemaGrammarConverter, convertJsonSchemaToGrammar }
 const EVENT_ON_INIT_CONTEXT_PROGRESS = '@RNLlama_onInitContextProgress'
 const EVENT_ON_TOKEN = '@RNLlama_onToken'
 const EVENT_ON_NATIVE_LOG = '@RNLlama_onNativeLog'
+const EVENT_ON_CONVERSATION_RESTORED = '@RNLlama_onConversationRestored'
 
 let EventEmitter: NativeEventEmitter | DeviceEventEmitterStatic
 if (Platform.OS === 'ios') {
@@ -80,6 +81,12 @@ export type TokenData = {
 type TokenNativeEvent = {
   contextId: number
   tokenResult: TokenData
+}
+
+export type ConversationRestoredEvent = {
+  contextId: number
+  messages: RNLlamaOAICompatibleMessage[]
+  timestamp?: number
 }
 
 export type ContextParams = Omit<
@@ -367,6 +374,21 @@ export class LlamaContext {
 
   async restoreConversationState(state: string): Promise<boolean> {
     return RNLlama.restoreConversationState(this.id, state);
+  }
+
+  onConversationRestored(
+    callback: (event: ConversationRestoredEvent) => void
+  ): { remove: () => void } {
+    if (!EventEmitter) {
+      return { remove: () => {} }
+    }
+    return EventEmitter.addListener(
+      EVENT_ON_CONVERSATION_RESTORED,
+      (evt: ConversationRestoredEvent) => {
+        if (evt.contextId !== this.id) return
+        callback(evt)
+      }
+    )
   }
 
   async release(): Promise<void> {
