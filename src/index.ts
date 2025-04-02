@@ -222,11 +222,28 @@ export class LlamaContext {
     },
   ): Promise<JinjaFormattedChatResult | string> {
     const chat = formatChat(messages)
+
+    console.log(`[LlamaContext ${this.id}] Input messages for getFormattedChat:`, JSON.stringify(chat, null,2));                                                                                                         
+    console.log(`[LlamaContext ${this.id}] Formatting params:`, JSON.stringify({ template, params }, null, 2));
+
+
     const useJinja = this.isJinjaSupported() && params?.jinja
     let tmpl = this.isLlamaChatSupported() || useJinja ? undefined : 'chatml'
     if (template) tmpl = template // Force replace if provided
     const jsonSchema = getJsonSchema(params?.response_format)
-    return RNLlama.getFormattedChat(this.id, JSON.stringify(chat), tmpl, {
+
+
+    // return RNLlama.getFormattedChat(this.id, JSON.stringify(chat), tmpl, {
+    //   jinja: useJinja,
+    //   json_schema: jsonSchema ? JSON.stringify(jsonSchema) : undefined,
+    //   tools: params?.tools ? JSON.stringify(params.tools) : undefined,
+    //   parallel_tool_calls: params?.parallel_tool_calls
+    //     ? JSON.stringify(params.parallel_tool_calls)
+    //     : undefined,
+    //   tool_choice: params?.tool_choice,
+    // })
+
+    const result = await RNLlama.getFormattedChat(this.id, JSON.stringify(chat), tmpl, {
       jinja: useJinja,
       json_schema: jsonSchema ? JSON.stringify(jsonSchema) : undefined,
       tools: params?.tools ? JSON.stringify(params.tools) : undefined,
@@ -235,6 +252,9 @@ export class LlamaContext {
         : undefined,
       tool_choice: params?.tool_choice,
     })
+
+    console.log(`[LlamaContext ${this.id}] Output from getFormattedChat:`, JSON.stringify(result, null, 2));   
+    return result;  
   }
 
   async completion(
@@ -285,6 +305,8 @@ export class LlamaContext {
       const jsonSchema = getJsonSchema(params.response_format)
       if (jsonSchema) nativeParams.json_schema = JSON.stringify(jsonSchema)
     }
+  
+    console.log(`[LlamaContext ${this.id}] Calling RNLlama.completion with params:`,JSON.stringify(nativeParams, null, 2)); 
 
     let tokenListener: any =
       callback &&
@@ -467,8 +489,12 @@ export async function initLlama(
     contextId,
     ...rest
   }: ContextParams,
+  params: ContextParams,
   onProgress?: (progress: number) => void,
 ): Promise<LlamaContext> {
+
+  console.log(`Calling initLlama with params:`, JSON.stringify(params, null, 2));
+
   let path = model
   if (path.startsWith('file://')) path = path.slice(7)
 
@@ -516,6 +542,7 @@ export async function initLlama(
     throw err
   })
   removeProgressListener?.remove()
+  
   return new LlamaContext({
     contextId: finalContextId,
     gpu,
