@@ -12,6 +12,7 @@ export type RNLlamaOAICompatibleMessage = {
 export function formatChat(
   messages: RNLlamaOAICompatibleMessage[],
 ): NativeLlamaChatMessage[] {
++  console.log('[RNLlama] formatChat: Input messages:', JSON.stringify(messages, null, 2));
   const chat: NativeLlamaChatMessage[] = []
 
   messages.forEach((currMsg) => {
@@ -40,5 +41,6 @@ export function formatChat(
 
     chat.push({ role, content })
   })
++  console.log('[RNLlama] formatChat: Output chat array:', JSON.stringify(chat, null, 2));
   return chat
 }
