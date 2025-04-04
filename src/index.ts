@@ -186,9 +186,15 @@ export class LlamaContext {
    * Load cached prompt & completion state from a file.
    */
   async loadSession(filepath: string): Promise<NativeSessionLoadResult> {
+    // DEBUG: Log parameters before loading session
     let path = filepath
     if (path.startsWith('file://')) path = path.slice(7)
+    console.log(`[LlamaContext ${this.id}] loadSession: Attempting to load from path: ${path}`);
     return RNLlama.loadSession(this.id, path)
+      .then(result => {
+        console.log(`[LlamaContext ${this.id}] loadSession: Native loadSession result:`, JSON.stringify(result, null, 2));
+        return result;
+      });
   }
 
   /**
@@ -198,7 +204,15 @@ export class LlamaContext {
     filepath: string,
     options?: { tokenSize: number },
   ): Promise<number> {
+    // DEBUG: Log parameters before saving session
+    let path = filepath
+    if (path.startsWith('file://')) path = path.slice(7)
+    console.log(`[LlamaContext ${this.id}] saveSession: Attempting to save to path: ${path}, options:`, JSON.stringify(options, null, 2));
     return RNLlama.saveSession(this.id, filepath, options?.tokenSize || -1)
+      .then(result => {
+        console.log(`[LlamaContext ${this.id}] saveSession: Native saveSession result (tokens saved):`, result);
+        return result;
+      });
   }
 
   isLlamaChatSupported(): boolean {
@@ -261,11 +275,16 @@ export class LlamaContext {
     params: CompletionParams,
     callback?: (data: TokenData) => void,
   ): Promise<NativeCompletionResult> {
+    // DEBUG: Log raw parameters received by completion function
+    console.log(`[LlamaContext ${this.id}] completion: Raw input params:`, JSON.stringify(params, null, 2));
+
     const nativeParams = {
       ...params,
       prompt: params.prompt || '',
       emit_partial_completion: !!callback,
     }
+
+    // DEBUG: Log if processing messages or using direct prompt
     if (params.messages) {
       // messages always win
       const formattedResult = await this.getFormattedChat(
@@ -278,6 +297,8 @@ export class LlamaContext {
           tool_choice: params.tool_choice,
         },
       )
+      // DEBUG: Log the result from getFormattedChat
+      console.log(`[LlamaContext ${this.id}] completion: Result from getFormattedChat:`, JSON.stringify(formattedResult, null, 2));
       if (typeof formattedResult === 'string') {
         nativeParams.prompt = formattedResult || ''
       } else {
