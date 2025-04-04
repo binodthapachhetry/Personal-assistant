@@ -237,8 +237,9 @@ export class LlamaContext {
   ): Promise<JinjaFormattedChatResult | string> {
     const chat = formatChat(messages)
 
-    console.log(`[LlamaContext ${this.id}] Input messages for getFormattedChat:`, JSON.stringify(chat, null,2));                                                                                                         
-    console.log(`[LlamaContext ${this.id}] Formatting params:`, JSON.stringify({ template, params }, null, 2));
+    // DEBUG: Log formatted chat array input and other formatting params
+    console.log(`[LlamaContext ${this.id}] getFormattedChat: Input chat array:`, JSON.stringify(chat, null,2));
+    console.log(`[LlamaContext ${this.id}] getFormattedChat: Formatting params:`, JSON.stringify({ template, params }, null, 2));
 
 
     const useJinja = this.isJinjaSupported() && params?.jinja
@@ -257,7 +258,8 @@ export class LlamaContext {
     //   tool_choice: params?.tool_choice,
     // })
 
-    const result = await RNLlama.getFormattedChat(this.id, JSON.stringify(chat), tmpl, {
+    // DEBUG: Log parameters being sent to native getFormattedChat
+    const nativeParams = {
       jinja: useJinja,
       json_schema: jsonSchema ? JSON.stringify(jsonSchema) : undefined,
       tools: params?.tools ? JSON.stringify(params.tools) : undefined,
@@ -265,10 +267,12 @@ export class LlamaContext {
         ? JSON.stringify(params.parallel_tool_calls)
         : undefined,
       tool_choice: params?.tool_choice,
-    })
+    };
+    console.log(`[LlamaContext ${this.id}] getFormattedChat: Calling native with chat (stringified): ${JSON.stringify(chat)}, template: ${tmpl}, params:`, JSON.stringify(nativeParams, null, 2));
 
-    console.log(`[LlamaContext ${this.id}] Output from getFormattedChat:`, JSON.stringify(result, null, 2));   
-    return result;  
+    const result = await RNLlama.getFormattedChat(this.id, JSON.stringify(chat), tmpl, nativeParams)
+    console.log(`[LlamaContext ${this.id}] getFormattedChat: Output from native:`, JSON.stringify(result, null, 2));
+    return result;
   }
 
   async completion(
@@ -319,15 +323,19 @@ export class LlamaContext {
         }
       }
     } else {
+      console.log(`[LlamaContext ${this.id}] completion: Using direct prompt:`, params.prompt);
       nativeParams.prompt = params.prompt || ''
     }
 
+    // DEBUG: Log if applying JSON schema from response_format
     if (nativeParams.response_format && !nativeParams.grammar) {
       const jsonSchema = getJsonSchema(params.response_format)
-      if (jsonSchema) nativeParams.json_schema = JSON.stringify(jsonSchema)
+      if (jsonSchema) {
+        console.log(`[LlamaContext ${this.id}] completion: Applying JSON schema from response_format`);
+        nativeParams.json_schema = JSON.stringify(jsonSchema)
+      }
     }
-  
-    console.log(`[LlamaContext ${this.id}] Calling RNLlama.completion with params:`,JSON.stringify(nativeParams, null, 2)); 
+    console.log(`[LlamaContext ${this.id}] Calling RNLlama.completion with params:`,JSON.stringify(nativeParams, null, 2));
 
     let tokenListener: any =
       callback &&
