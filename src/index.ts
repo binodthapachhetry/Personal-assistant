@@ -304,6 +304,8 @@ export class LlamaContext {
       // DEBUG: Log the result from getFormattedChat
       console.log(`[LlamaContext ${this.id}] completion: Result from getFormattedChat:`, JSON.stringify(formattedResult, null, 2));
       if (typeof formattedResult === 'string') {
+        // If we got a string prompt, remove original messages                                                 
+        delete nativeParams.messages; 
         nativeParams.prompt = formattedResult || ''
       } else {
         nativeParams.prompt = formattedResult.prompt || ''
@@ -320,6 +322,8 @@ export class LlamaContext {
         if (formattedResult.additional_stops) {
           if (!nativeParams.stop) nativeParams.stop = []
           nativeParams.stop.push(...formattedResult.additional_stops)
+          // If we got a structured result, remove original messages                                           
+          delete nativeParams.messages; 
         }
       }
     } else {

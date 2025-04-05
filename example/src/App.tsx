@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import type { ReactNode } from 'react'
 import { Platform, Alert, AppState } from 'react-native'
-import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import DocumentPicker from 'react-native-document-picker'
 import type { DocumentPickerResponse } from 'react-native-document-picker'
 import { Chat, darkTheme } from '@flyerhq/react-native-chat-ui'
@@ -76,6 +76,11 @@ ws ::= | " " | "\\n" [ \\t]{0,20}`
 // Default model URL - small Llama 3.2 model that works well on mobile
 const DEFAULT_MODEL_URL = 'https://huggingface.co/hugging-quants/Llama-3.2-1B-Instruct-Q8_0-GGUF/resolve/main/llama-3.2-1b-instruct-q8_0.gguf'
 
+
+// --- Constants for Session Persistence ---                                                                   
+const SESSION_FILENAME = 'llama_conversation_session.bin'                                                      
+const MESSAGES_STORAGE_KEY = '@llama_chat_messages'                                                             
+
 const randId = () => Math.random().toString(36).substr(2, 9)
 
 const user = { id: 'y9d7f8pgn' }
@@ -132,6 +137,66 @@ export default function App() {
     addMessage(textMessage)
     return textMessage.id
   }
+
+  // --- Helper function to save conversation state ---                                                        
+  const saveAppState = async () => {                                                                           
+    if (!context) {                                                                                            
+      console.log('[saveAppState] No context, skipping save.');                                                
+      return;                                                                                                  
+    }                                                                                                          
+    console.log('[saveAppState] Attempting to save state...');                                                 
+    try {                                                                                                      
+      // 1. Save Llama session state                                                                           
+      const sessionPath = `${dirs.DocumentDir}/${SESSION_FILENAME}`;                                           
+      const tokensSaved = await context.saveSession(sessionPath);                                              
+      console.log(`[saveAppState] Llama session saved to ${sessionPath}. Tokens: ${tokensSaved}`);                                                                                                                      
+      // 2. Save messages (excluding system messages)                                                          
+      const messagesToSave = messages.filter(msg => !msg.metadata?.system);                                    
+      await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messagesToSave));                        
+      console.log(`[saveAppState] Messages saved to AsyncStorage. Count: ${messagesToSave.length}`);                                                                                                                    
+
+      addSystemMessage(`App state saved (${tokensSaved} tokens).`);                                            
+    } catch (error) {                                                                                          
+      console.error('[saveAppState] Failed:', error);                                                          
+      addSystemMessage(`Failed to save app state: ${error.message}`);                                          
+    }                                                                                                          
+  };                                                                                                           
+                                                                                                             
+  // --- Helper function to load conversation state ---                                                        
+  const loadAppState = async (ctx: LlamaContext) => {                                                          
+    console.log('[loadAppState] Attempting to load state...');                                                 
+    try {                                                                                                      
+      // 1. Load messages from AsyncStorage                                                                    
+      const savedMessagesJson = await AsyncStorage.getItem(MESSAGES_STORAGE_KEY);                              
+      if (savedMessagesJson) {                                                                                 
+        const savedMessages: MessageType.Any[] = JSON.parse(savedMessagesJson);                                
+        // Prepend system messages if any, then add saved messages                                             
+        setMessages(msgs => [...msgs.filter(m => m.metadata?.system), ...savedMessages]);                      
+        console.log(`[loadAppState] Messages loaded from AsyncStorage. Count: ${savedMessages.length}`);       
+      } else {                                                                                                 
+        console.log('[loadAppState] No messages found in AsyncStorage.');                                      
+      }                                                                                                        
+                                                                                                        
+      // 2. Load Llama session state (restores KV cache etc.)                                                  
+      const sessionPath = `${dirs.DocumentDir}/${SESSION_FILENAME}`;                                           
+      try {                                                                                                    
+        const loadResult = await ctx.loadSession(sessionPath);                                                 
+        console.log(`[loadAppState] Llama session loaded from ${sessionPath}. Details:`, loadResult);          
+        addSystemMessage(`Session loaded (${loadResult.tokens_loaded} tokens).`);                              
+      } catch (loadError: any) {                                                                               
+        // It's normal if the session file doesn't exist on first run                                          
+        if (loadError.message?.includes('Failed to load session file')) {                                      
+          console.log('[loadAppState] No existing session file found.');                                      
+        } else {                                                                                               
+          console.error('[loadAppState] Error loading session file:', loadError);                             
+          addSystemMessage(`Error loading session: ${loadError.message}`);                                    
+        }                                                                                                      
+      }                                                                                                        
+    } catch (error) {                                                                                          
+      console.error('[loadAppState] Failed:', error);                                                          
+      addSystemMessage(`Failed to load app state: ${error.message}`);                                          
+    }                                                                                                          
+  };                                                                                                            
 
   const handleReleaseContext = async () => {
     if (!context) return
@@ -583,12 +648,18 @@ export default function App() {
   // Handle app state changes
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
-      if (nextAppState === 'background' && context) {
-        // App is going to background, release context to save memory
-        addSystemMessage('App going to background, releasing model to save memory...')
-        handleReleaseContext()
+      // if (nextAppState === 'background' && context) {
+      //   // App is going to background, release context to save memory
+      //   addSystemMessage('App going to background, releasing model to save memory...')
+      //   handleReleaseContext()
+
+      if ((nextAppState === 'inactive' || nextAppState === 'background') && context) {                         
+        // App is going inactive/background, save state                                                        
+        console.log(`AppState is ${nextAppState}, saving state...`);                                           
+        saveAppState(); // Call the save helper function 
       } else if (nextAppState === 'active' && !context && lastModelPathRef.current) {
         // App is coming to foreground, ask to reload the model
+        // App is coming to foreground, context was released/never loaded, ask to reload
         Alert.alert(
           'Reload Model',
           'Would you like to reload the model?',
@@ -605,9 +676,12 @@ export default function App() {
         )
       }
     })
-    
+
+    // Save state when the component unmounts (app close) 
     return () => {
       subscription.remove()
+      // Save state one last time on cleanup, if context exists                                                
+      if (context) saveAppState();
     }
   }, [context])
   
@@ -744,6 +818,12 @@ export default function App() {
             '- /save-session: save the session tokens\n' +
             '- /load-session: load the session tokens',
         )
+
+        // --- Load App State After Context Init and Setting State ---                                         
+        // Call loadAppState as a separate statement here                                                      
+        loadAppState(ctx);                                                                                     
+        // --- End Load App State --- 
+
       })
       .catch((err) => {
         addSystemMessage(`Context initialization failed: ${err.message}`)

@@ -523,7 +523,20 @@ completion_token_output llama_rn_context::doCompletion()
 {
     const completion_token_output token_with_probs = nextToken();
 
+    // DEBUG: Log the raw token ID                                                                             
+    LOG_VERBOSE("doCompletion: Raw token ID: %d", token_with_probs.tok); 
+
     const std::string token_text = token_with_probs.tok == -1 ? "" : common_token_to_piece(ctx, token_with_probs.tok);
+
+
+                                                                                                                 
+    // DEBUG: Log the detokenized text piece and its bytes                                                     
+    std::stringstream hex_bytes;                                                                               
+    for (unsigned char c : token_text) { hex_bytes << std::hex << std::setw(2) << std::setfill('0') << (int)c << " "; }                                                                                                       
+    LOG_VERBOSE("doCompletion: Token text: '%s', Bytes: %s", token_text.c_str(), hex_bytes.str().c_str());     
+       
+
+
     generated_text += token_text;
 
     if (params.sampling.n_probs > 0)
