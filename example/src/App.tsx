@@ -956,10 +956,8 @@ export default function App() {
           }
         })
         .filter((msg): msg is RNLlamaOAICompatibleMessage => !!msg), // Filter out nulls
-      // Note: The latest user message (message.text) is already added via addMessage above
-      // and will be included when [...messages] is spread in the next turn.
-      // We don't need to add it explicitly here again.
-      // { role: 'user', content: message.text } // This would duplicate the last message
+      // FIX: Explicitly add the current user message to ensure it's processed in this turn
+      { role: 'user', content: message.text },
     ];
 
     // DEBUG: Log the messages being sent for completion
