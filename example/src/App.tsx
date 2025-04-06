@@ -938,27 +938,20 @@ export default function App() {
 
     const id = randId()
     const createdAt = Date.now()
-    const msgs = [
-      systemMessage,
-      ...[...messages]
-        .reverse()
-        .map((msg) => {
-          if (
-            !msg.metadata?.system &&
-            msg.metadata?.conversationId === conversationIdRef.current &&
-            msg.metadata?.contextId === context?.id &&
-            msg.type === 'text'
-          ) {
-            return {
-              role: msg.author.id === systemId ? 'assistant' : 'user',
-              content: msg.text,
-            }
-          }
-          return { role: '', content: '' }
-        })
-        .filter((msg) => msg.role),
-      { role: 'user', content: message.text },
-    ]
+    // --- START CHANGE: Construct message history for prompt ---
+    // We no longer send the full history here after implementing session load/save.
+    // The loaded session handles the history internally (KV cache).
+    // We only need to send the *new* user message to be processed.
+
+    // Create the message structure needed for context.completion, containing only the new message.
+    const messagesForCompletion: RNLlamaOAICompatibleMessage[] = [
+      { role: 'user', content: message.text }
+    ];
+
+    // DEBUG: Log the messages being sent for completion
+    console.log('[handleSendPress] Messages being sent for completion:', JSON.stringify(messagesForCompletion, null, 2));
+    // --- END CHANGE ---
+
     addMessage(textMessage)
     setInferencing(true)
 
@@ -1081,7 +1074,8 @@ export default function App() {
     context
       ?.completion(
         {
-          messages: msgs,
+          // Pass only the new message(s) for processing against the loaded context
+          messages: messagesForCompletion,
           n_predict: 128, // Limit maximum output token length to 128
 
           response_format: responseFormat,
