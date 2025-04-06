@@ -615,6 +615,7 @@ export default function App() {
 
         // Set maximum context window size to 1024 tokens
         n_ctx: 1024,
+        n_keep: 1, // Keep at least the BOS token during truncation
 
         // If use deepseek r1 distill
         reasoning_format: 'deepseek',
@@ -936,24 +937,34 @@ export default function App() {
       },
     }
 
+    addMessage(textMessage) // Add user message to UI state *before* constructing history
+    setInferencing(true)
+
     const id = randId()
     const createdAt = Date.now()
-    // --- START CHANGE: Construct message history for prompt ---
-    // We no longer send the full history here after implementing session load/save.
-    // The loaded session handles the history internally (KV cache).
-    // We only need to send the *new* user message to be processed.
-
-    // Create the message structure needed for context.completion, containing only the new message.
-    const messagesForCompletion: RNLlamaOAICompatibleMessage[] = [
-      { role: 'user', content: message.text }
+    // --- START REVERT: Construct message history for prompt ---
+    // Reverting to send the full history again, as loadPrompt expects it to reconcile the loaded KV cache.
+    const msgs: RNLlamaOAICompatibleMessage[] = [
+      systemMessage, // Ensure system message is included
+      ...[...messages] // Use the current messages state (should include loaded ones)
+        .reverse() // Reverse to process oldest first for formatting
+        .map((msg): RNLlamaOAICompatibleMessage | null => {
+          if (msg.type !== 'text' || msg.metadata?.system) return null // Skip non-text and system UI messages
+          return {
+            role: msg.author.id === systemId ? 'assistant' : 'user',
+            content: msg.text,
+          }
+        })
+        .filter((msg): msg is RNLlamaOAICompatibleMessage => !!msg), // Filter out nulls
+      // Note: The latest user message (message.text) is already added via addMessage above
+      // and will be included when [...messages] is spread in the next turn.
+      // We don't need to add it explicitly here again.
+      // { role: 'user', content: message.text } // This would duplicate the last message
     ];
 
     // DEBUG: Log the messages being sent for completion
-    console.log('[handleSendPress] Messages being sent for completion:', JSON.stringify(messagesForCompletion, null, 2));
-    // --- END CHANGE ---
-
-    addMessage(textMessage)
-    setInferencing(true)
+    console.log('[handleSendPress] Messages being sent for completion:', JSON.stringify(msgs, null, 2));
+    // --- END REVERT ---
 
     let responseFormat
     {
@@ -1074,8 +1085,8 @@ export default function App() {
     context
       ?.completion(
         {
-          // Pass only the new message(s) for processing against the loaded context
-          messages: messagesForCompletion,
+          // REVERT: Pass the full constructed history
+          messages: msgs,
           n_predict: 128, // Limit maximum output token length to 128
 
           response_format: responseFormat,
