@@ -212,112 +212,6 @@ export default function App() {
       })
   }
   
-  const saveCurrentConversation = async () => {
-    if (!context) return;
-    
-    try {
-      // Get the conversation state - this will automatically include session data
-      let state = await context.getConversationState();
-      if (!state) {
-        console.log('No conversation state to save');
-        return;
-      }
-      
-      // Parse the state to add messages
-      const stateObj = JSON.parse(state);
-      stateObj.messages = messages
-        .filter(msg => !msg.metadata?.system && msg.type === 'text')
-        .map(msg => ({
-          id: msg.id,
-          author: msg.author.id,
-          text: msg.text,
-          createdAt: msg.createdAt,
-        }));
-      
-      // Save the updated state
-      state = JSON.stringify(stateObj);
-      await context.restoreConversationState(state);
-      await AsyncStorage.setItem('conversation_state', state);
-      
-      // Get the number of tokens from the state
-      const tokensSaved = stateObj.session?.n_tokens || 0;
-      addSystemMessage(`Conversation saved! ${tokensSaved} tokens saved.`);
-    } catch (error) {
-      console.error('Failed to save conversation:', error);
-      addSystemMessage(`Failed to save conversation: ${error.message}`);
-    }
-  };
-  
-  const restoreConversation = async () => {
-    if (!context) return false;
-    
-    try {
-      // First check if we have a saved state
-      const savedState = await AsyncStorage.getItem('conversation_state');
-      if (!savedState) {
-        console.log('No saved conversation state found');
-        return false;
-      }
-      
-      // Parse the state
-      const stateObj = JSON.parse(savedState);
-      
-      // Check if this state is for the current context
-      if (stateObj.contextId !== context.id) {
-        console.log('Saved conversation is for a different context');
-        return false;
-      }
-      
-      // Restore the conversation state - this will automatically restore the session
-      const success = await context.restoreConversationState(savedState);
-      if (!success) {
-        console.error('Failed to restore conversation state');
-        return false;
-      }
-      
-      // Log session info if available
-      if (stateObj.session) {
-        console.log('Session info found:', stateObj.session);
-        const tokenCount = stateObj.session.n_tokens || 0;
-        console.log(`Session contains ${tokenCount} tokens`);
-      }
-      
-      // Restore the messages if they exist
-      if (stateObj.messages && Array.isArray(stateObj.messages)) {
-        // Clear existing messages except system messages
-        setMessages(messages.filter(msg => msg.metadata?.system));
-        
-        // Add the restored messages
-        stateObj.messages.forEach(msg => {
-          const author = msg.author === systemId ? system : user;
-          const message = {
-            author,
-            createdAt: msg.createdAt,
-            id: msg.id,
-            text: msg.text,
-            type: 'text',
-            metadata: {
-              contextId: context.id,
-              conversationId: conversationIdRef.current,
-              restored: true,
-            },
-          };
-          addMessage(message, true);
-        });
-        
-        const tokenCount = stateObj.session?.n_tokens || 0;
-        addSystemMessage(`Conversation restored with ${tokenCount} tokens!`);
-        return true;
-      }
-      
-      return false;
-    } catch (error) {
-      console.error('Failed to restore conversation:', error);
-      addSystemMessage(`Failed to restore conversation: ${error.message}`);
-      return false;
-    }
-  };
-
   // Calculate SHA-256 hash of a file
   const calculateFileHash = async (filePath: string): Promise<string> => {
     try {
@@ -698,59 +592,6 @@ export default function App() {
     }
   }, [])
   
-  // Check for restored conversation when context is loaded
-  useEffect(() => {
-    if (context) {
-      // Listen for conversation restored events
-      const subscription = context.onConversationRestored((event) => {
-        console.log('Conversation restored event received:', event);
-        
-        if (event.messages && event.messages.length > 0) {
-          // Clear existing messages except system messages
-          setMessages(msgs => msgs.filter(msg => msg.metadata?.system));
-          
-          // Add the restored messages
-          event.messages.forEach(msg => {
-            const author = msg.role === 'assistant' ? system : user;
-            const message = {
-              author,
-              createdAt: msg.createdAt || Date.now(),
-              id: msg.id || randId(),
-              text: msg.content,
-              type: 'text',
-              metadata: {
-                contextId: context.id,
-                conversationId: conversationIdRef.current,
-                restored: true,
-              },
-            };
-            addMessage(message, true);
-          });
-          
-          const tokenCount = event.tokenCount || 0;
-          addSystemMessage(`Conversation restored with ${tokenCount} tokens!`);
-        }
-      });
-      
-      // If we have a context but no messages, check if there's a saved conversation
-      if (messages.length <= 1) { // Only welcome message or empty
-        addSystemMessage('Checking for saved conversation...')
-        
-        restoreConversation().then(restored => {
-          if (!restored) {
-            addSystemMessage('No saved conversation found or restoration failed.')
-          }
-        }).catch(err => {
-          console.error('Error restoring conversation:', err)
-          addSystemMessage('Error restoring conversation: ' + err.message)
-        })
-      }
-      
-      // Clean up listener when component unmounts or context changes
-      return () => subscription.remove();
-    }
-  }, [context])
-
   const handleInitContext = async (
     file: DocumentPickerResponse,
     loraFile: DocumentPickerResponse | null,
@@ -1043,21 +884,18 @@ export default function App() {
               addSystemMessage(`Session save failed: ${e.message}`)
             })
           return
-        case '/save-conversation':
-          saveCurrentConversation()
-          return
         case '/load-session':
           context
-            .loadSession(`${dirs.DocumentDir}/llama-session.bin`)
-            .then((details) => {
-              console.log('Session loaded:', details)
-              addSystemMessage(
-                `Session loaded! ${details.tokens_loaded} tokens loaded.`,
-              )
-            })
-            .catch((e) => {
-              console.log('Session load failed:', e)
-              addSystemMessage(`Session load failed: ${e.message}`)
+            .loadSession(`${dirs.DocumentDir}/${SESSION_FILENAME}`)
+            .then((details) => {                                                                               
+              console.log('[handleSendPress] /load-session: Session loaded:', details);                        
+              addSystemMessage(                                                                                
+                `Session loaded! ${details.tokens_loaded} tokens loaded.`,                                     
+              );                                                                                               
+            })                                                                                                 
+            .catch((e) => {                                                                                    
+              console.log('[handleSendPress] /load-session: Session load failed:', e);                         
+              addSystemMessage(`Session load failed: ${e.message}`);                                           
             })
           return
         case '/lora':
