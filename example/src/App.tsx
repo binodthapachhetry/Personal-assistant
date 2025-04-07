@@ -163,15 +163,30 @@ export default function App() {
   };                                                                                                           
                                                                                                              
   // --- Helper function to load conversation state ---                                                        
-  const loadAppState = async (ctx: LlamaContext) => {                                                          
-    console.log('[loadAppState] Attempting to load state...');                                                 
+  // const loadAppState = async (ctx: LlamaContext) => {    
+
+  const loadAppState = async (ctx: LlamaContext): Promise<MessageType.Any[] | null> => {                                                       
+    console.log('[loadAppState] Attempting to load state...');   
+    let loadedMessages: MessageType.Any[] | null = null;                                               
     try {                                                                                                      
       // 1. Load messages from AsyncStorage                                                                    
       const savedMessagesJson = await AsyncStorage.getItem(MESSAGES_STORAGE_KEY);                              
       if (savedMessagesJson) {                                                                                 
         const savedMessages: MessageType.Any[] = JSON.parse(savedMessagesJson);                                
         // Prepend system messages if any, then add saved messages                                             
-        setMessages(msgs => [...msgs.filter(m => m.metadata?.system), ...savedMessages]);                      
+        // setMessages(msgs => [...msgs.filter(m => m.metadata?.system), ...savedMessages]);  
+
+        console.log('[loadAppState] Parsed saved messages:', JSON.stringify(savedMessages, null, 2));                                                                                                                         
+        // --- Simplify State Update ---                                                                       
+        // Directly set the messages state to the loaded messages.                                             
+        // If you need to preserve initial system messages, adjust accordingly,                                
+        // but let's start simple to ensure the loaded messages are set.                                       
+        // setMessages(savedMessages);                                                                            
+        // console.log('[loadAppState] Called setMessages with loaded messages.');
+
+        // --- Store loaded messages to be returned ---                                                        
+        loadedMessages = savedMessages; 
+
         console.log(`[loadAppState] Messages loaded from AsyncStorage. Count: ${savedMessages.length}`);       
       } else {                                                                                                 
         console.log('[loadAppState] No messages found in AsyncStorage.');                                      
@@ -195,7 +210,8 @@ export default function App() {
     } catch (error) {                                                                                          
       console.error('[loadAppState] Failed:', error);                                                          
       addSystemMessage(`Failed to load app state: ${error.message}`);                                          
-    }                                                                                                          
+    }        
+    return loadedMessages; // Return the messages (or null)                                                                                                   
   };                                                                                                            
 
   const handleReleaseContext = async () => {
@@ -642,9 +658,20 @@ export default function App() {
         })
       },
     )
-      .then((ctx) => {
+      // .then((ctx) => {
+      .then(async (ctx) => { // Make the .then callback async
         const t1 = Date.now()
         setContext(ctx)
+                                                                                                                    
+        // --- Load App State After Context Init ---                                                           
+        // Await the loading process which returns messages                                                    
+        const loadedMessages = await loadAppState(ctx);                                                        
+        // Now set the state with the loaded messages if they exist                                            
+        if (loadedMessages) {                                                                                  
+          setMessages(loadedMessages);                                                                         
+          console.log('[handleInitContext] Messages state updated with loaded messages.');                     
+        }                                                                                                      
+        // --- End Load App State ---                                                                          
         addSystemMessage(
           `Context initialized!\n\nLoad time: ${t1 - t0}ms\nGPU: ${
             ctx.gpu ? 'YES' : 'NO'
@@ -663,7 +690,7 @@ export default function App() {
 
         // --- Load App State After Context Init and Setting State ---                                         
         // Call loadAppState as a separate statement here                                                      
-        loadAppState(ctx);                                                                                     
+        // loadAppState(ctx);                                                                                     
         // --- End Load App State --- 
 
       })
