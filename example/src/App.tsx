@@ -115,6 +115,7 @@ export default function App() {
 
   const conversationIdRef = useRef<string>(defaultConversationId)
   const lastModelPathRef = useRef<string | null>(null)
+  const autoLoadAttemptedRef = useRef<boolean>(false); // Prevent multiple auto-load attempts 
 
   const addMessage = (message: MessageType.Any, batching = false) => {
     if (batching) {
@@ -594,9 +595,60 @@ export default function App() {
       if (context) saveAppState();
     }
   }, [context])
+
+  // --- Effect for Auto-Loading Model on Startup ---                                                          
+  useEffect(() => {                                                                                            
+    // Only run once on mount and if no context exists yet                                                     
+    if (autoLoadAttemptedRef.current || context) {                                                             
+      return;                                                                                                  
+    }                                                                                                          
+    autoLoadAttemptedRef.current = true;                                                                       
+    const attemptAutoLoad = async () => {                                                                      
+      const modelsDir = `${dirs.DocumentDir}/models`;                                                          
+      try {                                                                                                    
+        // addSystemMessage("Checking for existing model...");                                                    
+        const dirExists = await ReactNativeBlobUtil.fs.exists(modelsDir);                                      
+        if (!dirExists) {                                                                                      
+          console.log("[AutoLoad] Models directory not found.");                                               
+          // Don't add system message here, welcome message handles it 
+          addWelcomeMessage(); // Show welcome message if no models dir                                        
+          return;                                                                                              
+        }                                                                                                                                                                                                             
+        
+        const files = await ReactNativeBlobUtil.fs.ls(modelsDir);                                              
+        if (files.length === 1) {                                                                              
+          const modelName = files[0];                                                                          
+          // Basic check to avoid loading non-model files if possible                                          
+          if (modelName.toLowerCase().endsWith('.gguf')) {                                                     
+            addSystemMessage(`Found single model: ${modelName}. Attempting auto-load...`);                     
+            const modelFile = { uri: `${modelsDir}/${modelName}` };                                            
+            // Store path for potential reload prompt later                                                    
+            lastModelPathRef.current = modelFile.uri;                                                          
+            await handleInitContext(modelFile, null); // Await to ensure loading starts                        
+          } else {                                                                                             
+            // console.log(`[AutoLoad] Found single file, but it doesn't end with .gguf: ${modelName}`);  
+            console.log(`[AutoLoad] Found single file, but it doesn't end with .gguf: ${modelName}`);          
+            addWelcomeMessage(); // Show welcome message if single file isn't a model        
+          }                                                                                                    
+        } else {                                                                                               
+          console.log(`[AutoLoad] Found ${files.length} models. Manual selection required.`); 
+          addWelcomeMessage(); // Show welcome message if 0 or >1 models found                  
+        }                                                                                                      
+      } catch (error: any) {                                                                                   
+        addSystemMessage(`Error during auto-load check: ${error.message}`);                                    
+        console.error("[AutoLoad] Error:", error);                                                             
+      }                                                                                                        
+    };                                                                                                                                                                                                                  
+  
+    // Delay slightly to allow initial UI render / welcome message                                             
+    const timer = setTimeout(attemptAutoLoad, 500);                                                            
+    return () => clearTimeout(timer); // Cleanup timer on unmount                                              
+
+  }, [context]); // Depend on context to ensure it doesn't run if context gets set early                                               
   
   // Show welcome message on first load
-  useEffect(() => {
+  // useEffect(() => {
+  const addWelcomeMessage = () => { 
     if (messages.length === 0) {
       addSystemMessage(
         'Welcome to the LLM Chat App!\n\n' +
@@ -606,7 +658,7 @@ export default function App() {
         'Use the button below to download the recommended model, or tap the attachment icon to select a model from your device.'
       )
     }
-  }, [])
+  // }, [])
   
   const handleInitContext = async (
     file: DocumentPickerResponse,
