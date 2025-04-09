@@ -117,6 +117,9 @@ export default function App() {
   const lastModelPathRef = useRef<string | null>(null)
   const autoLoadAttemptedRef = useRef<boolean>(false); // Prevent multiple auto-load attempts 
 
+  // Ref to track the latest messages state for cleanup functions                                              
+  const messagesRef = useRef(messages); 
+
   const addMessage = (message: MessageType.Any, batching = false) => {
     if (batching) {
       // This can avoid the message duplication in a same batch
@@ -140,21 +143,44 @@ export default function App() {
   }
 
   // --- Helper function to save conversation state ---                                                        
-  const saveAppState = async () => {                                                                           
+  const saveAppState = async (currentMessages: MessageType.Any[]) => {                                                                           
     if (!context) {                                                                                            
       console.log('[saveAppState] No context, skipping save.');                                                
       return;                                                                                                  
     }                                                                                                          
     console.log('[saveAppState] Attempting to save state...');                                                 
     try {                                                                                                      
+      // // 1. Save Llama session state                                                                           
+      // const sessionPath = `${dirs.DocumentDir}/${SESSION_FILENAME}`;                                           
+      // const tokensSaved = await context.saveSession(sessionPath);                                              
+      // console.log(`[saveAppState] Llama session saved to ${sessionPath}. Tokens: ${tokensSaved}`);  
+
+      // 2. Save messages (excluding system messages)   
+      // --- Add detailed logging for messages ---   
+      console.log(`[saveAppState] Messages: ${JSON.stringify(messages)}`);                                                     
+      console.log(`[saveAppState] Current messages state count: ${messages.length}`);
+    
+      const messagesToSave = messages.filter(msg => !msg.metadata?.system);                                    
+      // await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messagesToSave));
+      console.log(`[saveAppState] Messages to save (after filter) count: ${messagesToSave.length}`);                        
+      console.log(`[saveAppState] Messages saved to AsyncStorage. Count: ${messagesToSave.length}`); 
+      if (messagesToSave.length > 0) {
+        console.log('[saveAppState] First message to save:', JSON.stringify(messagesToSave[0], null, 2));
+      }  
+      // --- Explicit await and try-catch for AsyncStorage --- 
+      try {                                                                                                    
+        await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messagesToSave));                      
+        console.log(`[saveAppState] AsyncStorage.setItem successful. Count: ${messagesToSave.length}`);        
+      } catch (storageError) {                                                                                 
+        console.error('[saveAppState] AsyncStorage.setItem failed:', storageError);                            
+        addSystemMessage(`Failed to save messages to storage: ${storageError.message}`);  
+        // Optionally, decide if you want to proceed with session save even if messages failed                      
+      }   
+      // --- SWAPPED ORDER: Save LLM session state SECOND ---                                                  
       // 1. Save Llama session state                                                                           
       const sessionPath = `${dirs.DocumentDir}/${SESSION_FILENAME}`;                                           
-      const tokensSaved = await context.saveSession(sessionPath);                                              
-      console.log(`[saveAppState] Llama session saved to ${sessionPath}. Tokens: ${tokensSaved}`);                                                                                                                      
-      // 2. Save messages (excluding system messages)                                                          
-      const messagesToSave = messages.filter(msg => !msg.metadata?.system);                                    
-      await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messagesToSave));                        
-      console.log(`[saveAppState] Messages saved to AsyncStorage. Count: ${messagesToSave.length}`);                                                                                                                    
+      const tokensSaved = await context.saveSession(sessionPath); // No options needed, defaults are fine      
+      console.log(`[saveAppState] Llama session saved to ${sessionPath}. Tokens: ${tokensSaved}`);                                     
 
       addSystemMessage(`App state saved (${tokensSaved} tokens).`);                                            
     } catch (error) {                                                                                          
@@ -566,8 +592,9 @@ export default function App() {
 
       if ((nextAppState === 'inactive' || nextAppState === 'background') && context) {                         
         // App is going inactive/background, save state                                                        
-        console.log(`AppState is ${nextAppState}, saving state...`);                                           
-        saveAppState(); // Call the save helper function 
+        console.log(`AppState is ${nextAppState}, saving state...`);   
+        // Use messagesRef.current to ensure latest messages are saved                                        
+        saveAppState(messagesRef.current); // Call the save helper function 
       } else if (nextAppState === 'active' && !context && lastModelPathRef.current) {
         // App is coming to foreground, ask to reload the model
         // App is coming to foreground, context was released/never loaded, ask to reload
@@ -591,61 +618,83 @@ export default function App() {
     // Save state when the component unmounts (app close) 
     return () => {
       subscription.remove()
-      // Save state one last time on cleanup, if context exists                                                
-      if (context) saveAppState();
+      // Save state one last time on cleanup, if context exists  
+      // Use messagesRef.current to ensure we save the *latest* messages
+
+      // if (context) saveAppState();
+      if (context) saveAppState(messagesRef.current); // Pass latest messages explicitly
     }
   }, [context])
 
-  // --- Effect for Auto-Loading Model on Startup ---                                                          
-  useEffect(() => {                                                                                            
-    // Only run once on mount and if no context exists yet                                                     
-    if (autoLoadAttemptedRef.current || context) {                                                             
-      return;                                                                                                  
-    }                                                                                                          
-    autoLoadAttemptedRef.current = true;                                                                       
-    const attemptAutoLoad = async () => {                                                                      
-      const modelsDir = `${dirs.DocumentDir}/models`;                                                          
-      try {                                                                                                    
-        // addSystemMessage("Checking for existing model...");                                                    
-        const dirExists = await ReactNativeBlobUtil.fs.exists(modelsDir);                                      
-        if (!dirExists) {                                                                                      
-          console.log("[AutoLoad] Models directory not found.");                                               
-          // Don't add system message here, welcome message handles it 
-          addWelcomeMessage(); // Show welcome message if no models dir                                        
-          return;                                                                                              
-        }                                                                                                                                                                                                             
+  // // --- Effect for Auto-Loading Model on Startup ---                                                          
+  // useEffect(() => {                                                                                            
+  //   // Only run once on mount and if no context exists yet                                                     
+  //   if (autoLoadAttemptedRef.current || context) {                                                             
+  //     return;                                                                                                  
+  //   }                                                                                                          
+  //   autoLoadAttemptedRef.current = true;                                                                       
+  //   const attemptAutoLoad = async () => {                                                                      
+  //     const modelsDir = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/models`                                                               
+  //     // const exists = await ReactNativeBlobUtil.fs.exists(modelsDir)                                                                       
+                                                                                                                                          
+  //     // if (!exists) {                                                                                                                      
+  //     //   console.log("Models directory doesn't exist. Creating it now.");                                                              
+  //     //   addWelcomeMessage();                                                                      
+  //     //   return                                                                                                                            
+  //     // }                                                                                                                                   
+                                                                                                                                          
+  //     // const files = await ReactNativeBlobUtil.fs.ls(modelsDir)  
+      
+  //     try {                                                                                                    
+  //       // addSystemMessage("Checking for existing model...");                                                    
+  //       const dirExists = await ReactNativeBlobUtil.fs.exists(modelsDir);                                      
+  //       if (!dirExists) {                                                                                      
+  //         console.log("[AutoLoad] Models directory not found.");                                               
+  //         // Don't add system message here, welcome message handles it 
+  //         addWelcomeMessage(); // Show welcome message if no models dir                                        
+  //         return;                                                                                              
+  //       }                                                                                                                                                                                                             
         
-        const files = await ReactNativeBlobUtil.fs.ls(modelsDir);                                              
-        if (files.length === 1) {                                                                              
-          const modelName = files[0];                                                                          
-          // Basic check to avoid loading non-model files if possible                                          
-          if (modelName.toLowerCase().endsWith('.gguf')) {                                                     
-            addSystemMessage(`Found single model: ${modelName}. Attempting auto-load...`);                     
-            const modelFile = { uri: `${modelsDir}/${modelName}` };                                            
-            // Store path for potential reload prompt later                                                    
-            lastModelPathRef.current = modelFile.uri;                                                          
-            await handleInitContext(modelFile, null); // Await to ensure loading starts                        
-          } else {                                                                                             
-            // console.log(`[AutoLoad] Found single file, but it doesn't end with .gguf: ${modelName}`);  
-            console.log(`[AutoLoad] Found single file, but it doesn't end with .gguf: ${modelName}`);          
-            addWelcomeMessage(); // Show welcome message if single file isn't a model        
-          }                                                                                                    
-        } else {                                                                                               
-          console.log(`[AutoLoad] Found ${files.length} models. Manual selection required.`); 
-          addWelcomeMessage(); // Show welcome message if 0 or >1 models found                  
-        }                                                                                                      
-      } catch (error: any) {                                                                                   
-        addSystemMessage(`Error during auto-load check: ${error.message}`);                                    
-        console.error("[AutoLoad] Error:", error);                                                             
-      }                                                                                                        
-    };                                                                                                                                                                                                                  
-  
-    // Delay slightly to allow initial UI render / welcome message                                             
-    const timer = setTimeout(attemptAutoLoad, 500);                                                            
-    return () => clearTimeout(timer); // Cleanup timer on unmount                                              
+  //       const files = await ReactNativeBlobUtil.fs.ls(modelsDir);  
+  //       console.log(`Files: ${files}`)
 
-  }, [context]); // Depend on context to ensure it doesn't run if context gets set early                                               
+  //       if (files.length === 1) {                                                                              
+  //         const modelName = files[0];  
+  //         console.log(`Model name: ${modelName}`);                                                                       
+  //         // Basic check to avoid loading non-model files if possible                                          
+  //         if (modelName.toLowerCase().endsWith('.gguf')) {                                                     
+  //           addSystemMessage(`Found single model: ${modelName}. Attempting auto-load...`);                     
+  //           const modelFile = { uri: `${modelsDir}/${modelName}` };                                            
+  //           // Store path for potential reload prompt later                                                    
+  //           lastModelPathRef.current = modelFile.uri;                                                          
+  //           await handleInitContext(modelFile, null); // Await to ensure loading starts                        
+  //         } else {                                                                                             
+  //           // console.log(`[AutoLoad] Found single file, but it doesn't end with .gguf: ${modelName}`);  
+  //           console.log(`[AutoLoad] Found single file, but it doesn't end with .gguf: ${modelName}`);          
+  //           addWelcomeMessage(); // Show welcome message if single file isn't a model        
+  //         }                                                                                                    
+  //       } else {                                                                                               
+  //         console.log(`[AutoLoad] Found ${files.length} models. Manual selection required.`); 
+  //         addWelcomeMessage(); // Show welcome message if 0 or >1 models found                  
+  //       }                                                                                                      
+  //     } catch (error: any) {                                                                                   
+  //       addSystemMessage(`Error during auto-load check: ${error.message}`);                                    
+  //       console.error("[AutoLoad] Error:", error);                                                             
+  //     }                                                                                                        
+  //   };                                                                                                                                                                                                                  
   
+  //   // Delay slightly to allow initial UI render / welcome message                                             
+  //   const timer = setTimeout(attemptAutoLoad, 500);                                                            
+  //   return () => clearTimeout(timer); // Cleanup timer on unmount                                              
+
+  // }, [context]); // Depend on context to ensure it doesn't run if context gets set early                                               
+  
+    // Effect to keep messagesRef updated with the latest messages state                                         
+  useEffect(() => {                                                                                            
+    messagesRef.current = messages;                                                                            
+  }, [messages]); 
+  
+                                                                                                        
   // Show welcome message on first load
   // useEffect(() => {
   const addWelcomeMessage = () => { 
@@ -658,7 +707,6 @@ export default function App() {
         'Use the button below to download the recommended model, or tap the attachment icon to select a model from your device.'
       )
     }
-  // }, [])
   
   const handleInitContext = async (
     file: DocumentPickerResponse,
@@ -1321,4 +1369,5 @@ export default function App() {
       />
     </SafeAreaProvider>
   )
+  }
 }
