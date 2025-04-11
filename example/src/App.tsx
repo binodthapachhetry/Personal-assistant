@@ -157,10 +157,10 @@ export default function App() {
 
       // 2. Save messages (excluding system messages)   
       // --- Add detailed logging for messages ---   
-      console.log(`[saveAppState] Messages: ${JSON.stringify(messages)}`);                                                     
-      console.log(`[saveAppState] Current messages state count: ${messages.length}`);
+      console.log(`[saveAppState] Messages: ${JSON.stringify(currentMessages)}`);                                                     
+      console.log(`[saveAppState] Current messages state count: ${currentMessages.length}`);
     
-      const messagesToSave = messages.filter(msg => !msg.metadata?.system);                                    
+      const messagesToSave = currentMessages.filter(msg => !msg.metadata?.system);                                    
       // await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messagesToSave));
       console.log(`[saveAppState] Messages to save (after filter) count: ${messagesToSave.length}`);                        
       console.log(`[saveAppState] Messages saved to AsyncStorage. Count: ${messagesToSave.length}`); 
@@ -168,6 +168,8 @@ export default function App() {
         console.log('[saveAppState] First message to save:', JSON.stringify(messagesToSave[0], null, 2));
       }  
       // --- Explicit await and try-catch for AsyncStorage --- 
+      console.log('[saveAppState] Attempting to save messages:', JSON.stringify(messagesToSave)); // Add this line
+
       try {                                                                                                    
         await AsyncStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(messagesToSave));                      
         console.log(`[saveAppState] AsyncStorage.setItem successful. Count: ${messagesToSave.length}`);        
@@ -178,11 +180,19 @@ export default function App() {
       }   
       // --- SWAPPED ORDER: Save LLM session state SECOND ---                                                  
       // 1. Save Llama session state                                                                           
-      const sessionPath = `${dirs.DocumentDir}/${SESSION_FILENAME}`;                                           
-      const tokensSaved = await context.saveSession(sessionPath); // No options needed, defaults are fine      
-      console.log(`[saveAppState] Llama session saved to ${sessionPath}. Tokens: ${tokensSaved}`);                                     
+      const sessionPath = `${dirs.DocumentDir}/${SESSION_FILENAME}`; 
+      
+      try {                                                                                                  
+        const tokensSaved = await context.saveSession(sessionPath);                                        
+        console.log(`[saveAppState] Llama session successfully saved to ${sessionPath}. Tokens:${tokensSaved}`);                                                                                      
+        addSystemMessage(`App state saved (${tokensSaved} tokens).`); // Maybe move this inside the inner  try                                                                                                    
+      } catch (sessionSaveError) {                                                                           
+        console.error(`[saveAppState] Failed specifically during context.saveSession('${sessionPath}'):`, sessionSaveError);                                                                                     
+        addSystemMessage(`Failed to save LLM session: ${sessionSaveError.message}`);                       
+        // Decide if you want to re-throw or handle differently                                            
+      }    
 
-      addSystemMessage(`App state saved (${tokensSaved} tokens).`);                                            
+                                                 
     } catch (error) {                                                                                          
       console.error('[saveAppState] Failed:', error);                                                          
       addSystemMessage(`Failed to save app state: ${error.message}`);                                          
@@ -593,7 +603,10 @@ export default function App() {
       if ((nextAppState === 'inactive' || nextAppState === 'background') && context) {                         
         // App is going inactive/background, save state                                                        
         console.log(`AppState is ${nextAppState}, saving state...`);   
-        // Use messagesRef.current to ensure latest messages are saved                                        
+        // Use messagesRef.current to ensure latest messages are saved   
+        console.log(`[Hanle App state changes] messagesRef: ${JSON.stringify(messagesRef)}`)    
+        console.log(`[Hanle App state changes] messagesRef.current: ${JSON.stringify(messagesRef.current)}`) 
+        console.log(`[Hanle App state changes] messagesRef.current state count: ${messagesRef.current.length}`);
         saveAppState(messagesRef.current); // Call the save helper function 
       } else if (nextAppState === 'active' && !context && lastModelPathRef.current) {
         // App is coming to foreground, ask to reload the model
@@ -694,7 +707,22 @@ export default function App() {
     messagesRef.current = messages;                                                                            
   }, [messages]); 
   
-                                                                                                        
+  
+  useEffect(() => {                                                                                             
+    if (!context) return; // Only run if context exists                                                         
+                                                                                                                
+    const intervalId = setInterval(() => {                                                                      
+      console.log('[Periodic Save] Triggering saveAppState...');                                                
+      // Ensure saveAppState uses the latest messages via the ref passed in                                     
+      saveAppState(messagesRef.current);                                                                        
+    }, 60000); // Save every 10 seconds                                                                         
+                                                                                                                
+    return () => {                                                                                              
+      console.log('[Periodic Save] Clearing interval.'); // Optional: log cleanup                               
+      clearInterval(intervalId); // Clear interval on cleanup                                                   
+    };                                                                                                          
+  }, [context]); // Re-run if context changes (starts/stops the timer)                                          
+
   // Show welcome message on first load
   // useEffect(() => {
   const addWelcomeMessage = () => { 
@@ -707,6 +735,7 @@ export default function App() {
         'Use the button below to download the recommended model, or tap the attachment icon to select a model from your device.'
       )
     }
+  }
   
   const handleInitContext = async (
     file: DocumentPickerResponse,
@@ -767,9 +796,16 @@ export default function App() {
         // Await the loading process which returns messages                                                    
         const loadedMessages = await loadAppState(ctx);                                                        
         // Now set the state with the loaded messages if they exist                                            
-        if (loadedMessages) {                                                                                  
+        // if (loadedMessages) {  
+
+        // Now set the state ONLY if loadedMessages is not null AND not empty                                  
+        // This prevents clearing the state if AsyncStorage load fails/is empty                                
+        // while the session load succeeded.
+
+        if (loadedMessages && loadedMessages.length > 0) {                                                                                 
           setMessages(loadedMessages);                                                                         
-          console.log('[handleInitContext] Messages state updated with loaded messages.');                     
+          // console.log('[handleInitContext] Messages state updated with loaded messages.');
+          console.log('[handleInitContext] Messages state updated with loaded messages from AsyncStorage.');                     
         }                                                                                                      
         // --- End Load App State ---                                                                          
         addSystemMessage(
@@ -1187,24 +1223,6 @@ export default function App() {
       const t0 = Date.now()
       const { tokens } = (await context?.tokenize(prompt)) || {}
       const t1 = Date.now()
-
-      // console.log(
-      //   'Formatted:',
-      //   formatted,
-      //   '\nTokenize:',
-      //   tokens,
-      //   `(${tokens?.length} tokens, ${t1 - t0}ms})`,
-      // )
-
-      // Test embedding
-      // await context?.embedding(prompt).then((result) => {
-      //   console.log('Embedding:', result)
-      // })
-
-      // Test detokenize
-      // await context?.detokenize(tokens).then((result) => {
-      //   console.log('Detokenize:', result)
-      // })
     }
 
     context
@@ -1369,5 +1387,6 @@ export default function App() {
       />
     </SafeAreaProvider>
   )
-  }
+  // }
 }
+
