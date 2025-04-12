@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react'
-import type { ReactNode } from 'react'
-import { Platform, Alert, AppState } from 'react-native'
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
+import React, { useState, useRef, useEffect, useCallback } from 'react'                                         
+import type { ReactNode } from 'react'                                                                          
+import { Platform, Alert, AppState, Button } from 'react-native'                                                
+import { SafeAreaProvider } from 'react-native-safe-area-context' 
 import DocumentPicker from 'react-native-document-picker'
 import type { DocumentPickerResponse } from 'react-native-document-picker'
 import { Chat, darkTheme } from '@flyerhq/react-native-chat-ui'
@@ -18,6 +18,12 @@ import {
   addNativeLogListener,
   // eslint-disable-next-line import/no-unresolved
 } from 'llama.rn'
+
+import notifee, { TimestampTrigger, TriggerType } from '@notifee/react-native'                                  
+import { format, parseISO, isFuture } from 'date-fns' // For date parsing and formatting                        
+import { saveReminder, type Reminder } from './reminders' // Import reminder storage functions                  
+import { Bubble } from './Bubble' 
+
 import { Bubble } from './Bubble'
 
 // Create a custom theme by extending the darkTheme
@@ -111,11 +117,13 @@ export default function App() {
   const [downloading, setDownloading] = useState<boolean>(false)
   const [downloadProgress, setDownloadProgress] = useState<number>(0)
   const [downloadSpeed, setDownloadSpeed] = useState<string>('')
-  const [downloadPhase, setDownloadPhase] = useState<string>('')
 
-  const conversationIdRef = useRef<string>(defaultConversationId)
-  const lastModelPathRef = useRef<string | null>(null)
-  const autoLoadAttemptedRef = useRef<boolean>(false); // Prevent multiple auto-load attempts 
+  const [downloadPhase, setDownloadPhase] = useState<string>('')                                                
+  const [notificationPermissionGranted, setNotificationPermissionGranted] = useState<boolean | null>(null)                                                                              
+                                                                                                                
+  const conversationIdRef = useRef<string>(defaultConversationId)                                               
+  const lastModelPathRef = useRef<string | null>(null)                                                          
+  const autoLoadAttemptedRef = useRef<boolean>(false) // Prevent multiple auto-load attempts 
 
   // Ref to track the latest messages state for cleanup functions                                              
   const messagesRef = useRef(messages); 
