@@ -24,8 +24,6 @@ import { format, parseISO, isFuture } from 'date-fns' // For date parsing and fo
 import { saveReminder, type Reminder } from './reminders' // Import reminder storage functions                  
 import { Bubble } from './Bubble' 
 
-import { Bubble } from './Bubble'
-
 // Create a custom theme by extending the darkTheme
 const customTheme = {
   ...darkTheme,
@@ -149,6 +147,45 @@ export default function App() {
     addMessage(textMessage)
     return textMessage.id
   }
+
+   // --- Notification Permission Handling ---                                                                   
+   const requestNotificationPermission = useCallback(async () => {                                               
+    try {                                                                                                       
+      const settings = await notifee.requestPermission()                                                        
+      const granted =                                                                                           
+        settings.authorizationStatus >= notifee.AuthorizationStatus.AUTHORIZED                                  
+      setNotificationPermissionGranted(granted)                                                                 
+      if (!granted) {                                                                                           
+        addSystemMessage(                                                                                       
+          'Notification permission denied. Reminders will not be shown.',                                       
+        )                                                                                                       
+      } else {                                                                                                  
+        // Required for Android API 33+                                                                         
+        if (Platform.OS === 'android' && settings.android.alarm !== notifee.AndroidNotificationSetting.ENABLED) 
+{                                                                                                               
+           addSystemMessage(                                                                                    
+             'Please allow setting alarms and reminders for notifications to work reliably.',                   
+           )                                                                                                    
+           // Optionally, guide the user to settings                                                            
+           // await notifee.openAlarmPermissionSettings();                                                      
+        }                                                                                                       
+        console.log('Notification permissions granted.')                                                        
+      }                                                                                                         
+    } catch (error) {                                                                                           
+      console.error('Failed to request notification permission:', error)                                        
+      setNotificationPermissionGranted(false)                                                                   
+      addSystemMessage('Failed to request notification permissions.')                                           
+    }                                                                                                           
+  }, [])                                                                                                        
+                                                                                                                
+  useEffect(() => {                                                                                             
+    // Request permission on mount or when context is ready                                                     
+    if (context && notificationPermissionGranted === null) {                                                    
+      requestNotificationPermission()                                                                           
+    }                                                                                                           
+  }, [context, notificationPermissionGranted, requestNotificationPermission]) 
+
+
 
   // --- Helper function to save conversation state ---                                                        
   const saveAppState = async (currentMessages: MessageType.Any[]) => {                                                                           
@@ -645,7 +682,7 @@ export default function App() {
       // if (context) saveAppState();
       if (context) saveAppState(messagesRef.current); // Pass latest messages explicitly
     }
-  }, [context])
+  }, [context, messagesRef]) // Add messagesRef dependency
 
   // // --- Effect for Auto-Loading Model on Startup ---                                                          
   // useEffect(() => {                                                                                            
@@ -986,11 +1023,47 @@ export default function App() {
     loraFile = null                                                                                                                     
                                                                                                                                         
     handleInitContext(modelFile, loraFile)                                                                                              
-  }                      
-  
-  const handleSendPress = async (message: MessageType.PartialText) => {
-    if (context) {
-      switch (message.text) {
+  }       
+
+  // --- Define the set_reminder tool schema ---                                                                
+  const reminderToolSchema = {                                                                                  
+    type: 'function',                                                                                           
+    function: {                                                                                                 
+      name: 'set_reminder',                                                                                     
+      description:                                                                                              
+        'Sets a reminder for the user for a specific task at a given time.',                                    
+      parameters: {                                                                                             
+        type: 'object',                                                                                         
+        properties: {                                                                                           
+          task_description: {                                                                                   
+            type: 'string',                                                                                     
+            description: 'A concise description of the task to be reminded of.',                                
+          },                                                                                                    
+          iso_timestamp: {                                                                                      
+            type: 'string',                                                                                     
+            description:                                                                                        
+              'The exact time for the reminder in ISO 8601 format (e.g., "2025-04-11T17:00:00.000Z"). Use UTC.',
+          },                                                                                                    
+          // Optional: Include time_expression if iso_timestamp parsing might fail                              
+          // time_expression: {                                                                                 
+          //   type: 'string',                                                                                  
+          //   description: 'The natural language time expression used by the user (e.g., "tomorrow at 5pm").'  
+          // }                                                                                                  
+        },                                                                                                      
+        required: ['task_description', 'iso_timestamp'],                                                        
+      },                                                                                                        
+    },                                                                                                          
+  }                                                                                                             
+                                                                                                                
+  const handleSendPress = async (message: MessageType.PartialText) => {                                         
+    if (!context) {                                                                                             
+      addSystemMessage('Please load a model first using the attachment icon.')                                  
+      return                                                                                                    
+    }                                                                                                           
+                                                                                                                
+    // --- Command Handling ---                                                                                 
+    if (message.text.startsWith('/')) {                                                                         
+      switch (message.text) {                                                                                   
         case '/info':
           addSystemMessage(
             `// Model Info\n${json5.stringify(context.model, null, 2)}`,
@@ -1094,10 +1167,16 @@ export default function App() {
             )
           })
           return
-      }
-    }
-    const textMessage: MessageType.Text = {
-      author: user,
+     // Add other commands here...                                                                           
+        default:                                                                                                
+          addSystemMessage(`Unknown command: ${message.text}`)                                                  
+          return                                                                                                
+      }                                                                                                         
+    }                                                                                                           
+                                                                                                                
+    // --- Regular Message & Potential Reminder Handling ---                                                    
+    const textMessage: MessageType.Text = {                                                                     
+      author: user, 
       createdAt: Date.now(),
       id: randId(),
       text: message.text,
@@ -1217,9 +1296,14 @@ export default function App() {
           },
         ],
       }
-      // Comment to test:
-      jinjaParams = { jinja: true }
-    }
+      // Comment to test:                                                                                       
+      // jinjaParams = { jinja: true } // Disable default jinja for reminder test                               
+      jinjaParams = {                                                                                           
+        jinja: true,                                                                                            
+        tools: [reminderToolSchema], // Include the reminder tool schema                                        
+        tool_choice: 'auto', // Let the model decide if it should use the tool                                  
+      }                                                                                                         
+    }   
 
     // Test area
     {
@@ -1317,11 +1401,119 @@ export default function App() {
           })
         },
       )
-      .then((completionResult) => {
+      .then(async (completionResult) => {
         // console.log('completionResult: ', completionResult)
-        const timings = `${completionResult.timings.predicted_per_token_ms.toFixed()}ms per token, ${completionResult.timings.predicted_per_second.toFixed(
-          2,
-        )} tokens per second`
+        // --- Handle Tool Call Response ---                                                                    
+        if (completionResult.tool_calls && completionResult.tool_calls.length > 0) {                            
+          for (const call of completionResult.tool_calls) {                                                     
+            if (call.function?.name === 'set_reminder') {                                                       
+              try {                                                                                             
+                const args = JSON.parse(call.function.arguments || '{}')                                        
+                const task = args.task_description                                                              
+                const isoTimestamp = args.iso_timestamp                                                         
+                                                                                                                
+                if (!task || !isoTimestamp) {                                                                   
+                  throw new Error('Missing task description or timestamp from LLM.')                            
+                }                                                                                               
+                                                                                                                
+                // 1. Parse Time                                                                                
+                const triggerDate = parseISO(isoTimestamp)                                                      
+                if (!isFuture(triggerDate)) {                                                                   
+                    throw new Error(`Parsed time (${isoTimestamp}) is not in the future.`)                       
+                }                                                                                               
+                const triggerTimestamp = triggerDate.getTime()                                                  
+                                                                                                                
+                // 2. Check Permissions                                                                         
+                if (!notificationPermissionGranted) {                                                           
+                    addSystemMessage("Cannot set reminder: Notification permissions not granted. Please enable them in settings.");                                                                                            
+                    // Optionally prompt again: await requestNotificationPermission();                           
+                    // if (!notificationPermissionGranted) return; // Exit if still not granted                  
+                    return; // Stop processing this tool call                                                    
+                }                                                                                               
+                                                                                                                
+                                                                                                                
+                // 3. Generate ID & Save Reminder (initially without notification ID)                           
+                const reminderId = randId()                                                                     
+                const newReminder: Reminder = {                                                                 
+                  id: reminderId,                                                                               
+                  task: task,                                                                                   
+                  triggerTimestamp: triggerTimestamp,                                                           
+                  createdAt: Date.now(),                                                                        
+                }                                                                                               
+                await saveReminder(newReminder) // Save before scheduling                                       
+                                                                                                                
+                // 4. Schedule Notification                                                                     
+                const trigger: TimestampTrigger = {                                                             
+                  type: TriggerType.TIMESTAMP,                                                                  
+                  timestamp: triggerTimestamp,                                                                  
+                  // Optional: Allow while idle on Android                                                      
+                  // alarmManager: {                                                                            
+                  //   allowWhileIdle: true,                                                                    
+                  // },                                                                                         
+                }                                                                                               
+                                                                                                                
+                // Create a channel (required for Android)                                                      
+                // Do this ideally once at app startup, but doing it here ensures it exists                     
+                  const channelId = await notifee.createChannel({                                                
+                    id: 'reminders',                                                                             
+                    name: 'Reminder Notifications',                                                              
+                    sound: 'default',                                                                            
+                    importance: notifee.AndroidImportance.HIGH,                                                  
+                  });                                                                                            
+                                                                                                                
+                                                                                                                
+                const notificationId = await notifee.createTriggerNotification(                                 
+                  {                                                                                             
+                    id: reminderId, // Use reminder ID for notification ID                                      
+                    title: 'Reminder',                                                                          
+                    body: task,                                                                                 
+                    android: {                                                                                  
+                      channelId,                                                                                
+                      pressAction: {                                                                            
+                        id: 'default', // Action when notification is pressed                                   
+                      },                                                                                        
+                      // Optional: Add actions like 'Mark as Done' or 'Snooze'                                  
+                      // actions: [                                                                             
+                      //   { title: 'Mark as Done', pressAction: { id: 'mark-done' } },                         
+                      //   { title: 'Snooze (5 min)', pressAction: { id: 'snooze' } },                          
+                      // ],                                                                                     
+                    },                                                                                          
+                    ios: {                                                                                      
+                      sound: 'default',                                                                         
+                      // Optional: Add actions                                                                  
+                      // categoryId: 'reminder-actions', // Define category elsewhere                           
+                    }                                                                                           
+                  },                                                                                            
+                  trigger,                                                                                      
+                )                                                                                               
+                                                                                                                
+                // 5. Update Stored Reminder with Notification ID                                               
+                newReminder.scheduledNotificationId = notificationId                                            
+                await saveReminder(newReminder)                                                                 
+                                                                                                                
+                // 6. Confirm in Chat                                                                           
+                const formattedTime = format(triggerDate, "MMM d, yyyy 'at' h:mm a")                            
+                addSystemMessage(                                                                               
+                  `OK. Reminder set for "${task}" on ${formattedTime}. (ID: ${reminderId})`,                    
+                )                                                                                               
+                                                                                                                
+              } catch (error: any) {                                                                            
+                  console.error('Failed to process reminder tool call:', error)                                  
+                  addSystemMessage(`Sorry, I couldn't set the reminder: ${error.message}`)                       
+              }                                                                                                 
+              // If the LLM calls a tool, we might not want to display its raw text response.                   
+              // Decide whether to add the assistant's text response or just the confirmation.                  
+              // For now, we'll skip adding the assistant's text if a tool was called.                          
+              setInferencing(false) // Ensure inferencing stops after tool call processing                      
+              return // Stop further processing for this message                                                
+            }                                                                                                   
+          }                                                                                                     
+        }                                                                                                       
+        // --- End Tool Call Handling ---                                                                       
+                                                                                                                
+                                                                                                                
+        // --- Original completion handling (if no tool call occurred) ---                                      
+        const timings = `${completionResult.timings.predicted_per_token_ms.toFixed()}ms per token,${completionResult.timings.predicted_per_second.toFixed(2,)} tokens per second`  
         setMessages((msgs) => {
           const index = msgs.findIndex((msg) => msg.id === id)
           if (index >= 0) {

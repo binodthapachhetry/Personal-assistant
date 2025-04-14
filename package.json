@@ -233,7 +233,9 @@
   },
   "packageManager": "yarn@1.22.22",
   "dependencies": {
+    "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "^2.1.2",
-    "crypto-js": "^4.2.0"
+    "crypto-js": "^4.2.0",
+    "date-fns": "^4.1.0"
   }
 }
